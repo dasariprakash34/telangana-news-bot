@@ -93,12 +93,36 @@ def test_post_container_media_and_caption(engine):
     assert p.created_at is not None
 
 
-def test_mark_publishing_only_from_draft_or_approved(engine):
+def test_claim_post_only_from_draft_or_approved_and_only_once(engine):
     db.save_story(engine, make_story())
     a = db.save_post(engine, story_id="s1", format="single", state=PostState.approved)
-    assert db.mark_publishing(engine, a) is True
+    when = datetime(2026, 10, 28, 9, tzinfo=timezone.utc)
+    assert db.claim_post(engine, a, when) is True
+    p = db.get_post(engine, a)
+    assert p.state == PostState.publishing and p.claimed_at == when
+    assert db.claim_post(engine, a) is False  # second claim loses
+    for st in (PostState.published, PostState.failed, PostState.rejected, PostState.expired):
+        pid = db.save_post(engine, story_id="s1", format="single", state=st)
+        assert db.claim_post(engine, pid) is False
+        assert db.get_post(engine, pid).state == st
+
+
+def test_fail_unpublished_is_conditional(engine):
+    db.save_story(engine, make_story())
+    a = db.save_post(engine, story_id="s1", format="single", state=PostState.approved)
+    assert db.fail_unpublished(engine, a) is False  # not publishing
+    db.claim_post(engine, a)
+    db.set_post_media(engine, a, "m1", datetime(2026, 10, 28, tzinfo=timezone.utc))
+    assert db.fail_unpublished(engine, a) is False  # has media id: live
     assert db.get_post(engine, a).state == PostState.publishing
-    assert db.mark_publishing(engine, a) is False  # second claim loses
+    b = db.save_post(engine, story_id="s1", format="single", state=PostState.approved)
+    db.claim_post(engine, b)
+    assert db.fail_unpublished(engine, b) is True
+    assert db.get_post(engine, b).state == PostState.failed
+    db.update_post_state(engine, a, PostState.published)
+    assert db.fail_unpublished(engine, a) is False
+    assert db.media_ids_in_use(engine, b) == {"m1"}
+    assert db.media_ids_in_use(engine, a) == set()
 
 
 def test_init_adds_new_columns_to_existing_posts_table():
@@ -112,3 +136,4 @@ def test_init_adds_new_columns_to_existing_posts_table():
     db.init(e)
     db.init(e)  # idempotent
     db.set_post_container(e, 1, "c")  # would raise if column missing
+    assert db.claim_post(e, 1) in (True, False)  # claimed_at column exists

@@ -1,12 +1,14 @@
 """Publish a rendered post to Instagram, with duplicate prevention as the top priority.
 
 Order of operations (the duplicate guard):
-  validate -> load/check state -> store caption -> create container(s) -> store container id
-  -> poll until FINISHED -> atomically claim state `publishing` -> media_publish EXACTLY ONCE
-  -> record media id + `published`.
-Any failure before the claim marks the post `failed` (nothing was published). Any failure of
-media_publish itself leaves the post `publishing` (outcome unknown), is never retried, and is
-resolved later by reconcile_publishing against Instagram's recent media. Never log the token.
+  validate -> check state -> ATOMIC CLAIM (one conditional UPDATE draft/approved -> publishing,
+  sets claimed_at; only the winner continues) -> store caption -> create container(s) -> store
+  container id -> poll until FINISHED -> media_publish EXACTLY ONCE -> record media id + `published`.
+A loser of the claim makes no API call and writes no state. After the claim, a failure before
+media_publish marks the post `failed` with a conditional update (only if still publishing with
+no media id, so a live post is never demoted). A failure of media_publish itself leaves the
+post `publishing` (unknown outcome), is never retried, and is resolved later by
+reconcile_publishing against Instagram. Never log the token.
 """
 from __future__ import annotations
 
@@ -95,24 +97,23 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
     if post.state not in (PostState.draft, PostState.approved):
         raise PublishError(f"post {post_id} is {post.state.value}; only draft/approved can be published")
 
-    # Everything up to and including the claim: a failure here means nothing was published.
+    if not db.claim_post(engine, post_id):
+        raise AlreadyPublishing(f"post {post_id} was claimed by another publisher")
+
+    # Claim won: we are the only publisher. Failures before media_publish mean nothing was
+    # published, so mark failed (conditionally: never overwrite a live post).
     try:
         db.set_post_caption(engine, post_id, caption)
         container_id = _create_container(client, urls, caption)
         db.set_post_container(engine, post_id, container_id)
         _wait_until_finished(client, container_id, sleep, poll_interval, timeout)
-        if not db.mark_publishing(engine, post_id):
-            raise AlreadyPublishing(f"post {post_id} was claimed by another publisher")
-    except AlreadyPublishing:
-        raise
     except _ContainerAlreadyPublished as exc:
-        # Instagram says this container is already live: do NOT publish again, and let
-        # reconcile_publishing attach the media id.
-        db.update_post_state(engine, post_id, PostState.publishing)
+        # Instagram says this container is already live: do NOT publish again; stays
+        # `publishing` so reconcile_publishing can attach the media id.
         raise PublishError(f"post {post_id}: {exc}; already published on Instagram, "
                            "left as publishing for reconciliation") from None
     except Exception as exc:
-        db.update_post_state(engine, post_id, PostState.failed)
+        db.fail_unpublished(engine, post_id)
         log.warning("post %s failed before publish: %s", post_id, _safe(exc))
         if isinstance(exc, PublishError):
             raise
@@ -154,35 +155,85 @@ def _parse_ts(value: str) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _find_media(items: list, post, used: set[str]):
+    """Oldest recent media with the post's caption, not already owned by another post and not
+    older than claimed_at - 5 minutes. Returns (media_id, timestamp) or None."""
+    want = (post.caption or "").strip()
+    if not want:
+        return None
+    floor = _reference_time(post)
+    floor = floor - timedelta(minutes=5) if floor else None
+    best = None
+    for item in items:
+        mid = str(item.get("id") or "")
+        ts = _parse_ts(item.get("timestamp", ""))
+        if not mid or ts is None or mid in used:
+            continue
+        if str(item.get("caption") or "").strip() != want:
+            continue
+        if floor is not None and ts < floor:
+            continue
+        if best is None or ts < best[1]:
+            best = (mid, ts)
+    return best
+
+
+def _reference_time(post) -> datetime | None:
+    return post.claimed_at or post.updated_at or post.created_at
+
+
 def reconcile_publishing(engine, client: InstagramClient, now: datetime, *,
                          max_age_minutes: int = 30) -> list[int]:
     """Resolve posts stuck in `publishing` by looking at Instagram. Never posts anything.
 
-    Match -> published (with the media id). No match and stuck longer than max_age_minutes ->
-    failed, for a human to requeue. Returns ids whose state changed."""
+    With a stored container id its status decides: PUBLISHED -> the post is live, attach its media
+    id by caption match (excluding media owned by other posts); if the media cannot be found it
+    stays `publishing` (never failed when known live). ERROR/EXPIRED -> failed. FINISHED or
+    IN_PROGRESS -> failed once older than max_age_minutes (from claimed_at), else unchanged.
+    Without a container id: caption match, else failed when old. Returns ids that changed state."""
+    now = db._utc(now)
     stuck = db.list_posts_by_state(engine, PostState.publishing)
     if not stuck:
         return []
-    recent = client.get(f"{client.ig_user_id}/media", fields="id,caption,timestamp", limit=25)
-    items = recent.get("data", []) if isinstance(recent, dict) else []
+    recent_items: list | None = None
+
+    def recent() -> list:
+        nonlocal recent_items
+        if recent_items is None:
+            res = client.get(f"{client.ig_user_id}/media", fields="id,caption,timestamp", limit=25)
+            recent_items = res.get("data", []) if isinstance(res, dict) else []
+        return recent_items
+
     changed: list[int] = []
     for post in stuck:
-        match = None
-        want = (post.caption or "").strip()
-        if want:
-            for item in items:
-                ts = _parse_ts(item.get("timestamp", ""))
-                if (str(item.get("caption") or "").strip() == want and item.get("id") and ts
-                        and (post.created_at is None or ts >= post.created_at)):
-                    match = (str(item["id"]), ts)
-                    break
-        if match:
+        if post.media_id:  # media id already recorded; only the state write was lost
+            db.update_post_state(engine, post.id, PostState.published)
+            changed.append(post.id)
+            continue
+        ref = _reference_time(post)
+        old = ref is None or now - ref > timedelta(minutes=max_age_minutes)
+
+        def attach() -> bool:
+            match = _find_media(recent(), post, db.media_ids_in_use(engine, post.id))
+            if not match:
+                return False
             db.set_post_media(engine, post.id, match[0], match[1])
             db.update_post_state(engine, post.id, PostState.published)
             changed.append(post.id)
-        elif post.updated_at is not None and now - post.updated_at > timedelta(minutes=max_age_minutes):
-            db.update_post_state(engine, post.id, PostState.failed)
-            changed.append(post.id)
+            return True
+
+        if post.container_id:
+            status = client.get(post.container_id, fields="status_code").get("status_code")
+            if status == "PUBLISHED":
+                if not attach():
+                    log.warning("post %s is live on Instagram but its media was not found in "
+                                "recent media; left as publishing", post.id)
+            elif status in ("ERROR", "EXPIRED") or old:
+                if db.fail_unpublished(engine, post.id):
+                    changed.append(post.id)
+        elif not attach() and old:
+            if db.fail_unpublished(engine, post.id):
+                changed.append(post.id)
     return changed
 
 

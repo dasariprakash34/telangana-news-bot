@@ -43,3 +43,4 @@ class Post:
     caption: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    claimed_at: datetime | None = None

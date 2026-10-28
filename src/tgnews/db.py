@@ -40,6 +40,7 @@ posts = Table(
     Column("caption", Text),
     Column("created_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True)),  # last state change
+    Column("claimed_at", DateTime(timezone=True)),  # when a publisher claimed the post
 )
 
 kv = Table(
@@ -84,6 +85,7 @@ def _utc(dt: datetime | None) -> datetime | None:
 _POSTS_ADDED_COLUMNS = {
     "container_id": "VARCHAR(128)", "caption": "TEXT",
     "created_at": "TIMESTAMP WITH TIME ZONE", "updated_at": "TIMESTAMP WITH TIME ZONE",
+    "claimed_at": "TIMESTAMP WITH TIME ZONE",
 }
 
 
@@ -140,7 +142,8 @@ def _row_to_post(row: Any) -> Post:
                 state=PostState(row.state), media_id=row.media_id,
                 posted_at=_utc(row.posted_at), metrics=row.metrics,
                 container_id=row.container_id, caption=row.caption,
-                created_at=_utc(row.created_at), updated_at=_utc(row.updated_at))
+                created_at=_utc(row.created_at), updated_at=_utc(row.updated_at),
+                claimed_at=_utc(row.claimed_at))
 
 
 def get_post(engine: Engine, post_id: int) -> Post | None:
@@ -160,15 +163,35 @@ def update_post_state(engine: Engine, post_id: int, state: PostState, *,
         conn.execute(update(posts).where(posts.c.id == post_id).values(**values))
 
 
-def mark_publishing(engine: Engine, post_id: int) -> bool:
-    """Atomically move a draft/approved post to publishing. False if someone else already did
-    (or the post is in any other state): exactly one caller may go on to call media_publish."""
+def claim_post(engine: Engine, post_id: int, now: datetime | None = None) -> bool:
+    """Atomically claim a draft/approved post for publishing: one conditional UPDATE sets state
+    `publishing` and claimed_at. True only for the single caller that won; a loser (or a post in
+    any other state) gets False and nothing is written."""
+    claimed = _utc(now) if now is not None else _now()
     with engine.begin() as conn:
         res = conn.execute(update(posts).where(
             posts.c.id == post_id,
             posts.c.state.in_([PostState.draft.value, PostState.approved.value]),
-        ).values(state=PostState.publishing.value, updated_at=_now()))
+        ).values(state=PostState.publishing.value, claimed_at=claimed, updated_at=_now()))
         return res.rowcount == 1
+
+
+def fail_unpublished(engine: Engine, post_id: int) -> bool:
+    """Mark failed ONLY if still publishing with no media id (never touches a live post)."""
+    with engine.begin() as conn:
+        res = conn.execute(update(posts).where(
+            posts.c.id == post_id, posts.c.state == PostState.publishing.value,
+            posts.c.media_id.is_(None),
+        ).values(state=PostState.failed.value, updated_at=_now()))
+        return res.rowcount == 1
+
+
+def media_ids_in_use(engine: Engine, exclude_post_id: int) -> set[str]:
+    """Media ids already recorded on other posts."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(posts.c.media_id).where(
+            posts.c.id != exclude_post_id, posts.c.media_id.is_not(None))).all()
+    return {r[0] for r in rows}
 
 
 def set_post_caption(engine: Engine, post_id: int, caption: str) -> None:

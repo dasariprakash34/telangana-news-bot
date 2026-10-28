@@ -51,12 +51,15 @@ class FakeClient:
         self.create_error = create_error
         self.recent = recent
         self.state_at_publish = None
+        self.state_at_create = None
         self.post_id = None
         self._n = 0
 
     def post(self, path, **params):
         self.calls.append(("POST", path, params))
         if path.endswith("/media"):
+            if self.engine is not None and self.post_id is not None and self.state_at_create is None:
+                self.state_at_create = db.get_post(self.engine, self.post_id).state
             if self.create_error:
                 raise self.create_error
             self._n += 1
@@ -132,6 +135,8 @@ def test_state_is_publishing_before_api_call(engine):
     c = FakeClient(engine)
     run(engine, pid, [URL1], c)
     assert c.state_at_publish == PostState.publishing
+    # the claim happens up front: already `publishing` before any container exists
+    assert c.state_at_create == PostState.publishing
 
 
 def test_api_error_marks_failed_and_does_not_retry(engine):
@@ -226,59 +231,203 @@ def test_url_validation_before_any_call(engine, urls):
     assert db.get_post(engine, pid).state == PostState.approved
 
 
-def test_existing_publishing_post_checks_instagram_before_reposting(engine):
-    pid = new_post(engine, PostState.publishing)
-    db.set_post_caption(engine, pid, "Telangana headline\n\n#telangana")
+def test_two_sequential_publishes_second_is_refused(engine):
+    pid = new_post(engine)
     c = FakeClient(engine)
-    # the post must predate the matching media item (10:05)
-    with engine.begin() as conn:
-        conn.execute(update(db.posts).where(db.posts.c.id == pid).values(
-            created_at=datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc)))
+    run(engine, pid, [URL1], c)
+    n = len(c.calls)
+    with pytest.raises(AlreadyPublishing):
+        run(engine, pid, [URL1], c)
+    assert len(c.calls) == n and len(c.publish_calls()) == 1
+    assert db.get_post(engine, pid).state == PostState.published
+
+
+def test_lost_claim_makes_no_api_call_and_writes_no_state(engine, monkeypatch):
+    pid = new_post(engine)
+    db.set_post_caption(engine, pid, "winner caption")
+    monkeypatch.setattr(db, "claim_post", lambda *a, **k: False)
+    c = FakeClient(engine)
+    with pytest.raises(AlreadyPublishing):
+        run(engine, pid, [URL1], c)
+    assert c.calls == []
+    p = db.get_post(engine, pid)
+    assert p.state == PostState.approved and p.caption == "winner caption" and p.container_id is None
+
+
+@pytest.mark.parametrize("state", [PostState.publishing, PostState.published])
+def test_loser_can_never_demote_a_live_post(engine, state, monkeypatch):
+    # Loser read `approved`, then the winner moved the post on: the loser's claim fails, it
+    # makes no call, and a conditional fail cannot demote the live post either.
+    pid = new_post(engine)
+    real = db.claim_post
+
+    def racing_claim(eng, post_id, now=None):
+        assert real(eng, post_id) is True  # the winner's claim lands first
+        if state == PostState.published:
+            db.set_post_media(eng, post_id, "WIN", NOW)
+            db.update_post_state(eng, post_id, PostState.published)
+        return real(eng, post_id)  # loser's claim -> False
+    monkeypatch.setattr(db, "claim_post", racing_claim)
+    c = FakeClient(engine)
+    with pytest.raises(AlreadyPublishing):
+        run(engine, pid, [URL1], c)
+    assert c.calls == []
+    assert db.get_post(engine, pid).state == state
+    db.set_post_media(engine, pid, "WIN", NOW)
+    db.fail_unpublished(engine, pid)
+    assert db.get_post(engine, pid).state == state
+
+
+def test_failure_after_claim_marks_failed_conditionally(engine):
+    pid = new_post(engine)
+    c = FakeClient(engine, create_error=InstagramError("boom"))
+    real = db.fail_unpublished
+    calls = []  # spy: the failure path must use the conditional update
+
+    def spy(eng, post_id):
+        calls.append(post_id)
+        return real(eng, post_id)
+    import tgnews.publish as pub
+    pub.db.fail_unpublished = spy
+    try:
+        with pytest.raises(PublishError):
+            run(engine, pid, [URL1], c)
+    finally:
+        pub.db.fail_unpublished = real
+    assert calls == [pid] and db.get_post(engine, pid).state == PostState.failed
+    # and the conditional update refuses to demote a post that already has a media id
+    pid2 = new_post(engine)
+    db.claim_post(engine, pid2)
+    db.set_post_media(engine, pid2, "LIVE", NOW)
+    assert db.fail_unpublished(engine, pid2) is False
+    assert db.get_post(engine, pid2).state == PostState.publishing
+
+
+def claimed_post(engine, caption, *, container=None, minutes_ago=5, media=None):
+    pid = new_post(engine)
+    assert db.claim_post(engine, pid, NOW - timedelta(minutes=minutes_ago))
+    db.set_post_caption(engine, pid, caption)
+    if container:
+        db.set_post_container(engine, pid, container)
+    if media:
+        db.set_post_media(engine, pid, media, NOW)
+    return pid
+
+
+CAP = "Telangana headline\n\n#telangana"
+
+
+def test_existing_publishing_post_checks_instagram_before_reposting(engine):
+    pid = claimed_post(engine, CAP, container="C1", minutes_ago=120)
+    # claimed 2h ago -> media at 10:05 (<2h before 12:00? 120min ago = 10:00) is eligible
+    c = FakeClient(engine, statuses=["ig_status_published.json"])
     assert reconcile_publishing(engine, c, NOW) == [pid]
     p = db.get_post(engine, pid)
     assert p.state == PostState.published and p.media_id == "18000000000000101"
     assert p.posted_at == datetime(2026, 10, 28, 10, 5, tzinfo=timezone.utc)
     assert c.publish_calls() == []
     assert not any(m == "POST" for m, _, _ in c.calls)
-    assert c.calls[0][2] == {"fields": "id,caption,timestamp", "limit": 25}
+    assert c.calls[0][:2] == ("GET", "C1")
+    assert c.calls[1][2] == {"fields": "id,caption,timestamp", "limit": 25}
 
 
-def test_reconcile_ignores_media_older_than_post(engine):
-    pid = new_post(engine, PostState.publishing)
-    db.set_post_caption(engine, pid, "Telangana headline\n\n#telangana")
-    with engine.begin() as conn:  # post created AFTER the matching media -> a stale identical caption
-        conn.execute(update(db.posts).where(db.posts.c.id == pid).values(
-            created_at=datetime(2026, 10, 28, 11, 0, tzinfo=timezone.utc),
-            updated_at=NOW - timedelta(minutes=5)))
+def test_no_container_caption_match(engine):
+    pid = claimed_post(engine, CAP, minutes_ago=120)
+    c = FakeClient(engine)
+    assert reconcile_publishing(engine, c, NOW) == [pid]
+    assert db.get_post(engine, pid).media_id == "18000000000000101"
+    assert c.publish_calls() == [] and all(m == "GET" for m, _, _ in c.calls)
+
+
+def test_reconcile_ignores_media_older_than_claim_minus_5min(engine):
+    pid = claimed_post(engine, CAP, minutes_ago=5)  # claimed 11:55; media at 10:05 is stale
     assert reconcile_publishing(engine, FakeClient(engine), NOW) == []
     assert db.get_post(engine, pid).state == PostState.publishing
 
 
-def _publishing(engine, minutes_ago):
-    pid = new_post(engine, PostState.publishing)
-    db.set_post_caption(engine, pid, "no such caption")
-    with engine.begin() as conn:
-        conn.execute(update(db.posts).where(db.posts.c.id == pid).values(
-            updated_at=NOW - timedelta(minutes=minutes_ago)))
-    return pid
+def test_two_stuck_posts_with_identical_captions_get_distinct_media(engine):
+    a = claimed_post(engine, "same", minutes_ago=60)
+    b = claimed_post(engine, "same", minutes_ago=50)
+    recent = {"data": [
+        {"id": "M2", "caption": "same", "timestamp": "2026-10-28T11:20:00+0000"},
+        {"id": "M1", "caption": "same", "timestamp": "2026-10-28T11:05:00+0000"}]}
+    c = FakeClient(engine, recent=recent)
+    assert sorted(reconcile_publishing(engine, c, NOW)) == [a, b]
+    pa, pb = db.get_post(engine, a), db.get_post(engine, b)
+    assert {pa.media_id, pb.media_id} == {"M1", "M2"} and pa.media_id != pb.media_id
+    assert pa.media_id == "M1" and c.publish_calls() == []
 
 
-def test_reconcile_no_match_and_old_becomes_failed(engine):
-    pid = _publishing(engine, 45)
-    c = FakeClient(engine)
+def test_media_owned_by_another_post_is_excluded(engine):
+    a = claimed_post(engine, "same", minutes_ago=60, media="M1")  # owns M1 (state write was lost)
+    b = claimed_post(engine, "same", minutes_ago=10)
+    recent = {"data": [{"id": "M1", "caption": "same", "timestamp": "2026-10-28T11:05:00+0000"}]}
+    assert reconcile_publishing(engine, FakeClient(engine, recent=recent), NOW) == [a]
+    assert db.get_post(engine, a).state == PostState.published
+    assert db.get_post(engine, b).state == PostState.publishing
+
+
+def test_container_published_but_media_not_found_stays_publishing(engine, caplog):
+    pid = claimed_post(engine, "not in list", container="C1", minutes_ago=300)
+    c = FakeClient(engine, statuses=["ig_status_published.json"])
+    with caplog.at_level(logging.WARNING):
+        assert reconcile_publishing(engine, c, NOW) == []
+    assert db.get_post(engine, pid).state == PostState.publishing  # never failed when live
+    assert "live on Instagram" in caplog.text
+
+
+@pytest.mark.parametrize("status", ["ig_status_error.json", "ig_status_expired.json"])
+def test_container_error_or_expired_marks_failed(engine, status):
+    pid = claimed_post(engine, CAP, container="C1", minutes_ago=1)
+    c = FakeClient(engine, statuses=[status])
     assert reconcile_publishing(engine, c, NOW) == [pid]
-    assert db.get_post(engine, pid).state == PostState.failed
+    assert db.get_post(engine, pid).state == PostState.failed and c.publish_calls() == []
+
+
+def test_container_finished_but_old_marks_failed(engine):
+    pid = claimed_post(engine, CAP, container="C1", minutes_ago=45)
+    c = FakeClient(engine, statuses=["ig_status_finished.json"])
+    assert reconcile_publishing(engine, c, NOW) == [pid]
+    assert db.get_post(engine, pid).state == PostState.failed and c.publish_calls() == []
+
+
+def test_container_finished_and_young_stays_publishing(engine):
+    pid = claimed_post(engine, CAP, container="C1", minutes_ago=5)
+    c = FakeClient(engine, statuses=["ig_status_finished.json"])
+    assert reconcile_publishing(engine, c, NOW) == []
+    assert db.get_post(engine, pid).state == PostState.publishing and c.publish_calls() == []
+
+
+def test_no_container_no_match_old_failed_young_stays(engine):
+    old = claimed_post(engine, "zzz", minutes_ago=45)
+    young = claimed_post(engine, "zzz", minutes_ago=5)
+    c = FakeClient(engine)
+    assert reconcile_publishing(engine, c, NOW) == [old]
+    assert db.get_post(engine, old).state == PostState.failed
+    assert db.get_post(engine, young).state == PostState.publishing
     assert c.publish_calls() == []
 
 
-def test_reconcile_no_match_and_recent_stays_publishing(engine):
-    pid = _publishing(engine, 5)
-    assert reconcile_publishing(engine, FakeClient(engine), NOW) == []
-    assert db.get_post(engine, pid).state == PostState.publishing
+def test_reconcile_accepts_naive_now(engine):
+    pid = claimed_post(engine, "zzz", minutes_ago=45)
+    assert reconcile_publishing(engine, FakeClient(engine), NOW.replace(tzinfo=None)) == [pid]
+
+
+def test_null_claimed_at_falls_back_then_treated_as_old(engine):
+    pid = new_post(engine, PostState.publishing)  # legacy row: no claimed_at
+    db.set_post_caption(engine, pid, "zzz")
+    with engine.begin() as conn:
+        conn.execute(update(db.posts).where(db.posts.c.id == pid).values(
+            updated_at=NOW - timedelta(minutes=5)))
+    assert reconcile_publishing(engine, FakeClient(engine), NOW) == []  # falls back to updated_at
+    with engine.begin() as conn:
+        conn.execute(update(db.posts).where(db.posts.c.id == pid).values(
+            updated_at=None, created_at=None))
+    assert reconcile_publishing(engine, FakeClient(engine), NOW) == [pid]  # all NULL -> old
 
 
 def test_reconcile_api_failure_leaves_state_untouched(engine):
-    pid = _publishing(engine, 90)
+    pid = claimed_post(engine, "zzz", minutes_ago=90)
 
     class Boom(FakeClient):
         def get(self, path, **params):
