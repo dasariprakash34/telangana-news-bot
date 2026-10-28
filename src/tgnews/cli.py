@@ -118,6 +118,9 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         if summary.fetch_alert:  # exit stays 0: nothing is broken that a retry would fix
             print(f"warning: {summary.fetch_alert}", file=sys.stderr)
             _alert(deps.telegram, f"tgnews: {summary.fetch_alert}")
+        if summary.infra_errors:  # exit stays 0 (an abort raises and exits 1 elsewhere)
+            _alert(deps.telegram, f"tgnews: {len(summary.infra_errors)} infrastructure failure(s) "
+                                  f"in this run; last: {summary.infra_errors[-1]}")
     elif cmd == "dry-run":
         summary = pipeline.dry_run(settings, deps, args.out)
         print(_fmt(summary))

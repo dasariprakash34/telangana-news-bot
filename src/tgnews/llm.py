@@ -42,6 +42,11 @@ class LLMError(Exception):
     Messages are sanitized and safe to log."""
 
 
+class LLMContentError(LLMError):
+    """The call worked but produced no usable content (safety block, no candidates, empty text).
+    Deterministic per story, so callers treat it as a content failure, not an outage."""
+
+
 class LLMRateLimited(LLMError):
     """HTTP 429: quota or rate limit. Retrying immediately only burns more quota."""
 
@@ -147,18 +152,18 @@ class GeminiClient:
 def _parse(data: Any) -> _Response:
     cands = data.get("candidates") if isinstance(data, dict) else None
     if not isinstance(cands, list) or not cands or not isinstance(cands[0], dict):
-        raise LLMError("Gemini reply has no candidates (possibly blocked)")
+        raise LLMContentError("Gemini reply has no candidates (possibly blocked)")
     cand = cands[0]
     finish = str(cand.get("finishReason") or "").upper()
     if finish in _BAD_FINISH:
-        raise LLMError(f"Gemini reply not usable (finishReason {finish})")
+        raise LLMContentError(f"Gemini reply not usable (finishReason {finish})")
     content = cand.get("content")
     parts = content.get("parts") if isinstance(content, dict) else None
     text = "".join(p["text"] for p in parts or []
                    if isinstance(p, dict) and isinstance(p.get("text"), str)
                    and p.get("thought") is not True)
     if not text.strip():
-        raise LLMError("Gemini reply has no text")
+        raise LLMContentError("Gemini reply has no text")
     return _Response([_Block(text)], "max_tokens" if finish == "MAX_TOKENS" else "end_turn")
 
 

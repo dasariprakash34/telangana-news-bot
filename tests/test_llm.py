@@ -157,7 +157,8 @@ def test_rewrite_counts_blocked_reply_as_failed_attempt_then_fails():
     c, seen = client_for(lambda r: httpx.Response(200, json=ok_body("x", "SAFETY")))
     with pytest.raises(RewriteFailed) as ei:
         rewrite(STORY, c, "statement", "m-1")
-    assert len(seen) == 2 and isinstance(ei.value.__cause__, LLMError)
+    assert not isinstance(ei.value, RewriteUnavailable)
+    assert len(seen) == 2 and isinstance(ei.value.__cause__, LLMContentError)
 
 
 def test_rewrite_recovers_after_transient_503():
@@ -292,7 +293,7 @@ def test_default_install_works_without_anthropic(monkeypatch):
 
 
 # --- review fixes ---
-from tgnews.llm import LLMModelError, LLMRateLimited  # noqa: E402
+from tgnews.llm import LLMContentError, LLMModelError, LLMRateLimited  # noqa: E402
 from tgnews.rewrite import RewriteUnavailable  # noqa: E402
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from test_pipeline import FakeTG, engine, make_deps, settings, story  # noqa: E402,F401  (fixtures/helpers)
@@ -390,3 +391,38 @@ def test_settings_reject_unknown_provider_without_echo():
     with pytest.raises(ConfigError) as ei:
         config.Settings.from_env({"LLM_PROVIDER": "weirdprovider"})
     assert "weirdprovider" not in str(ei.value)
+
+
+@pytest.mark.parametrize("body", [
+    ok_body("x", "SAFETY"), {"promptFeedback": {"blockReason": "SAFETY"}}, {"candidates": []},
+    {"candidates": [{"content": {"parts": [{"text": "all thoughts", "thought": True}]},
+                     "finishReason": "STOP"}]},
+    ok_body("x", "RECITATION"), ok_body("x", "BLOCKLIST"), ok_body("x", "PROHIBITED_CONTENT")])
+def test_blocked_or_empty_replies_are_content_failures_not_unavailable(body):
+    c, seen = client_for(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(RewriteFailed) as ei:
+        rewrite(STORY, c, "statement", "m-1")
+    assert not isinstance(ei.value, RewriteUnavailable) and len(seen) == 2
+    assert isinstance(ei.value.__cause__, LLMContentError)
+
+
+def test_non_json_and_other_4xx_are_still_unavailable():
+    for resp in (httpx.Response(200, text="<html>"), httpx.Response(418)):
+        c, _ = client_for(lambda r, x=resp: x)
+        with pytest.raises(RewriteUnavailable):
+            rewrite(STORY, c, "statement", "m-1")
+
+
+def test_two_safety_blocked_stories_do_not_abort_run_and_good_story_posts(engine, tmp_path):
+    def handler(req):
+        if "BLOCKME" in json.loads(req.content)["contents"][0]["parts"][0]["text"]:
+            return httpx.Response(200, json=ok_body("x", "SAFETY"))
+        from test_pipeline import REPLY
+        return httpx.Response(200, json=ok_body(REPLY))
+
+    c, _ = client_for(handler)
+    stories = [story(1, summary="BLOCKME crime report"), story(2, summary="BLOCKME crime two"),
+               story(3)]
+    summary = pipeline.run_once(settings(), make_deps(engine, tmp_path, stories, llm=c, tg=FakeTG()))
+    assert summary.failed == 2 and summary.drafted == 1 and not summary.infra_errors
+    assert not db.save_story(engine, stories[0]) and not db.save_story(engine, stories[1])

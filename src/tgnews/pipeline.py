@@ -90,6 +90,7 @@ class RunSummary:
     cap_reached: bool = False
     slot_active: bool = True
     errors: list[str] = field(default_factory=list)
+    infra_errors: list[str] = field(default_factory=list)  # subset of errors from infrastructure
 
 
 @dataclass
@@ -296,6 +297,7 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
             log.warning("story %s failed: %s", story.id, sanitize_error(exc))
             if isinstance(exc, _INFRA):
                 infra_failures += 1
+                summary.infra_errors.append(f"{story.id}: {sanitize_error(exc)}")
                 if ctx.created == created_before:  # nothing was posted/drafted: allow a retry
                     db.release_story(engine, story.id)
             if is_auth_failure(exc):

@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from tgnews.llm import LLM_AUTH_ERRORS, LLMRateLimited
+from tgnews.llm import LLM_AUTH_ERRORS, LLMContentError, LLMRateLimited
 from tgnews.models import Story
 
 log = logging.getLogger(__name__)
@@ -219,7 +219,7 @@ def rewrite(
             log.warning("rewrite attempt failed: client error: %r", exc)
             problems = [f"client error: {exc!r}"]
             last_exc = exc
-            last_was_client_error = True
+            last_was_client_error = not isinstance(exc, LLMContentError)  # blocked/empty = content
             if isinstance(exc, LLMRateLimited):  # a second call would only burn more quota
                 break
             continue

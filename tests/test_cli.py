@@ -183,3 +183,17 @@ def test_run_alerts_on_empty_fetch_but_exits_zero(engine, monkeypatch, capsys):
     monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: quiet)
     tg2 = TG()
     assert run(["run"], builder(engine, telegram=tg2)) == 0 and tg2.calls == []
+
+
+def test_run_alerts_on_infrastructure_failures_even_without_abort(engine, monkeypatch, capsys):
+    tg = TG()
+    summary = pipeline.RunSummary(failed=1, errors=["s1: RewriteUnavailable"],
+                                  infra_errors=["s1: RewriteUnavailable"])
+    monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: summary)
+    assert run(["run"], builder(engine, telegram=tg)) == 0
+    assert len(tg.calls) == 1 and "infrastructure" in tg.calls[0][1]["text"]
+    assert "RewriteUnavailable" in tg.calls[0][1]["text"]
+    content_only = pipeline.RunSummary(failed=1, errors=["s1: bad content"])
+    monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: content_only)
+    tg2 = TG()
+    assert run(["run"], builder(engine, telegram=tg2)) == 0 and tg2.calls == []
