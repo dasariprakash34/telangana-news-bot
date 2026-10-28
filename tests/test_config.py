@@ -71,3 +71,11 @@ def test_database_url_normalised(raw, expected):
 def test_database_url_default_and_blank():
     assert Settings.from_env({}).database_url == "sqlite:///tgnews.db"
     assert Settings.from_env({"DATABASE_URL": ""}).database_url == "sqlite:///tgnews.db"
+
+
+def test_require_source_credit_parsing():
+    assert Settings.from_env({}).require_source_credit is True
+    assert Settings.from_env({"REQUIRE_SOURCE_CREDIT": "false"}).require_source_credit is False
+    assert Settings.from_env({"REQUIRE_SOURCE_CREDIT": " TRUE "}).require_source_credit is True
+    with pytest.raises(ValueError, match="REQUIRE_SOURCE_CREDIT"):
+        Settings.from_env({"REQUIRE_SOURCE_CREDIT": "maybe"})

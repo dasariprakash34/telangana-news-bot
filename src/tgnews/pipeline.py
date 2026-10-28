@@ -322,7 +322,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
         return False
     style = learn.choose(engine, "headline_style", STYLES, ctx.rng)
     fmt = learn.choose(engine, "format", FORMATS, ctx.rng)
-    rewritten = rewrite(story, deps.llm, style, deps.llm_model)
+    rewritten = rewrite(story, deps.llm, style, deps.llm_model, ctx.settings.require_source_credit)
     caption = compose_caption(rewritten)
     ctx.seq += 1
     if ctx.dry_out is not None:
@@ -391,7 +391,8 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
     # then only removes drafts nobody acted on.
     if deps.telegram is not None:
         try:
-            out.decisions = len(gate.poll_decisions(engine, deps.telegram, now))
+            out.decisions = len(gate.poll_decisions(
+                engine, deps.telegram, now, require_credit=settings.require_source_credit))
         except gate.TelegramError as exc:
             out.errors.append(f"poll: {sanitize_error(exc)}")
     out.expired = gate.expire_old_drafts(engine, now)

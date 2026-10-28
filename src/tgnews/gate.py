@@ -115,7 +115,8 @@ def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: l
 
 
 # -- polling ----------------------------------------------------------------
-def poll_decisions(engine: Engine, client: TelegramClient, now: datetime) -> list[Decision]:
+def poll_decisions(engine: Engine, client: TelegramClient, now: datetime,
+                   require_credit: bool = True) -> list[Decision]:
     """Fetch new Telegram updates and apply them. Only updates from the configured chat are
     honored; others are ignored but still advance the persisted offset so nothing is reprocessed.
     Only posts currently in `draft` state can change. ``now`` is accepted for a uniform job
@@ -130,7 +131,7 @@ def poll_decisions(engine: Engine, client: TelegramClient, now: datetime) -> lis
             if "callback_query" in upd:
                 d = _handle_callback(engine, client, upd["callback_query"])
             elif "message" in upd:
-                d = _handle_message(engine, client, upd["message"])
+                d = _handle_message(engine, client, upd["message"], require_credit)
             else:
                 d = None
         except Exception as exc:
@@ -189,7 +190,8 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
     return Decision(post_id=post_id, action=action)
 
 
-def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, Any]) -> Decision | None:
+def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, Any],
+                    require_credit: bool = True) -> Decision | None:
     if not _from_our_chat(client, msg.get("chat")):
         return None
     target = (msg.get("reply_to_message") or {}).get("message_id")
@@ -203,7 +205,7 @@ def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, An
     post = db.get_post(engine, post_id)
     if post is None or post.state != PostState.draft:
         return None
-    problems = validate(_candidate(post.caption or "", text))
+    problems = validate(_candidate(post.caption or "", text), require_credit)
     if problems:
         _safe(client, "sendMessage", chat_id=client.chat_id, reply_to_message_id=msg.get("message_id"),
               text="Caption not saved (old caption kept):\n- " + "\n- ".join(problems))

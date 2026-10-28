@@ -51,3 +51,4 @@ jobs:
           TIME_SLOTS: ${{ vars.TIME_SLOTS }}
           ACTIVE_SLOT_COUNT: ${{ vars.ACTIVE_SLOT_COUNT }}
           PER_RUN_CAP: ${{ vars.PER_RUN_CAP }}
+          REQUIRE_SOURCE_CREDIT: ${{ vars.REQUIRE_SOURCE_CREDIT }}

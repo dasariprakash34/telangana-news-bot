@@ -165,3 +165,32 @@ def test_truncated_reply_is_failed_attempt_with_clear_problem():
 def test_unknown_style_raises_value_error():
     with pytest.raises(ValueError):
         rewrite(STORY, FakeClient([]), "clickbait")
+
+
+NO_CREDIT_CAPTION = "హైదరాబాద్ నగరాన్ని భారీ వర్షం ముంచెత్తింది. పలు ప్రాంతాల్లో రోడ్లు జలమయమయ్యాయి."
+
+
+def test_credit_not_required_when_disabled():
+    post = good(caption_te=NO_CREDIT_CAPTION)
+    assert validate(post) != []  # default: the credit is still enforced
+    assert validate(post, require_credit=False) == []
+
+
+def test_credit_optional_prompt_and_message_do_not_ask_for_a_credit_line():
+    from tgnews.rewrite import _build_user_message, system_prompt
+
+    assert "మూలం:" in system_prompt(True)
+    assert "Do not mention the source" in system_prompt(False)
+    assert "మూలం:" not in system_prompt(False)
+    assert "use verbatim in caption_te" in _build_user_message(STORY, "statement", None, True)
+    assert "use verbatim in caption_te" not in _build_user_message(STORY, "statement", None, False)
+
+
+def test_rewrite_without_credit_accepts_a_caption_with_no_source_line():
+    client = FakeClient([json.dumps({
+        "headline_te": GOOD["headline_te"], "points_te": GOOD["points_te"],
+        "caption_te": NO_CREDIT_CAPTION, "hashtags": GOOD["hashtags"],
+        "source_credit": "The Hindu", "topic": "weather"})])
+    post = rewrite(STORY, client, "statement", "m", require_credit=False)
+    assert post.caption_te == NO_CREDIT_CAPTION
+    assert "Do not mention the source" in client.calls[0]["system"]

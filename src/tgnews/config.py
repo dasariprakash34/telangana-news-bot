@@ -18,6 +18,17 @@ def _default_weights() -> dict[str, float]:
     return {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
 
 
+def _parse_bool(raw: str | None, default: bool) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError("REQUIRE_SOURCE_CREDIT must be true or false")
+
+
 def _parse_cap(raw: str | None) -> int:
     if raw is None or not raw.strip():
         return DEFAULT_DAILY_CAP
@@ -95,6 +106,7 @@ class Settings:
     active_slot_count: int = DEFAULT_ACTIVE_SLOT_COUNT
     per_run_cap: int | None = None
     llm_provider: str = "gemini"
+    require_source_credit: bool = True  # REQUIRE_SOURCE_CREDIT=false: no source line in captions
     llm_model: str = ""  # empty: build_llm picks the provider default (gemini has none; required)
 
     @property
@@ -119,4 +131,5 @@ class Settings:
             per_run_cap=_parse_per_run_cap(env.get("PER_RUN_CAP")),
             llm_provider=_parse_provider(env.get("LLM_PROVIDER")),
             llm_model=(env.get("LLM_MODEL") or "").strip(),
+            require_source_credit=_parse_bool(env.get("REQUIRE_SOURCE_CREDIT"), True),
         )
