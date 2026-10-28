@@ -1,47 +1,69 @@
 # DRAFT blocklist for the safety filter. The page owner must review and edit it.
 #
 # !! All Telugu terms below MUST be verified by a fluent Telugu reader before
-# !! relying on them. They are a modest, unverified starting set.
+# !! relying on them. They are an unverified starting set. They are stems.
 #
-# Matching: case-insensitive over title + summary, NFC-normalized.
-# English keywords match from the start of a word ("arrest" matches "arrested").
-# Telugu keywords match as plain substrings.
+# How matching works (case-insensitive, over title + summary):
+#   English word      "rape"     matches the whole word only: "rape" yes,
+#                                "rapeseed" no, "raped" no (list "raped" too).
+#   English with *    "arrest*"  matches the start of a word: "arrest",
+#                                "arrested", "arrests", "arrestee".
+#   English phrase    "high court" works the same way (whole words).
+#   Telugu            plain substring, no * needed. Write the stem WITHOUT the
+#                     final vowel sign or virama so inflected forms still match
+#                     (e.g. ఎన్నిక matches ఎన్నికలు, ఎన్నికల, ఎన్నికకు).
+# Use * only where endings vary and no unrelated word starts the same way.
 #
 # verdict: block  -> never posted, in any mode.
 # verdict: hold   -> flagged. In "review" mode it is allowed (a human reviews
 #                    every draft); in "auto" mode it is kept as a draft.
 # If a story matches both kinds of group, block wins.
+# Each group needs: verdict (block or hold), keywords (a non-empty list).
+# A broken file makes the filter raise an error instead of allowing everything.
 
 groups:
   communal_incitement:
     verdict: block
     description: Content likely to incite communal violence or hatred.
     keywords:
-      - communal clash
+      - communal clash*
       - communal violence
-      - communal tension
-      - communal riot
-      - riot
+      - communal tension*
+      - communal riot*
+      - riot*
       - hate speech
       - lynching
-      - religious clash
-      - మతకలహాలు
-      - అల్లర్లు
+      - lynched
+      - religious clash*
+      - మతకలహ
+      - అల్లర్ల
 
   sexual_violence_and_minors:
     verdict: block
     description: Identifying victims of sexual violence, or minors involved in crimes.
     keywords:
       - rape
+      - raped
+      - rapes
+      - raping
+      - rapist
+      - rapists
       - gang-rape
-      - sexual assault
-      - sexual harassment of minor
+      - gang-raped
+      - gangrape
+      - gangraped
+      - gang rape
+      - gang raped
+      - sexual assault*
+      - sexually assaulted
       - molested
+      - molestation
+      - sexual harassment of minor
       - victim's name
       - minor accused
       - juvenile accused
-      - juvenile offender
-      - అత్యాచారం
+      - juvenile offender*
+      - అత్యాచార
 
   death_rumours:
     verdict: block
@@ -49,8 +71,8 @@ groups:
     keywords:
       - rumours of death
       - rumors of death
-      - death rumour
-      - death rumor
+      - death rumour*
+      - death rumor*
       - reportedly dead
       - unconfirmed reports of death
       - fake death news
@@ -59,48 +81,49 @@ groups:
     verdict: hold
     description: Politics and election claims.
     keywords:
-      - election
+      - election*
       - poll results
       - vote counting
-      - bypoll
-      - manifesto
+      - bypoll*
+      - manifesto*
       - horse-trading
-      - defection
-      - allegation
-      - ఎన్నికలు
+      - defection*
+      - allegation*
+      - ఎన్నిక
 
   crime_arrests:
     verdict: hold
     description: Crime and arrest reports.
     keywords:
-      - arrest
-      - murder
+      - arrest*
+      - murder*
       - killed
       - stabbed
       - robbery
-      - kidnap
-      - fraud
-      - scam
+      - kidnap*
+      - fraud*
+      - scam*
       - smuggling
       - custody
       - హత్య
-      - అరెస్ట్
+      - అరెస్ట
 
   accidents_deaths:
     verdict: hold
     description: Accident and death reports.
     keywords:
-      - accident
+      - accident*
       - died
       - dies
       - dead
-      - death
+      - death*
       - drowned
-      - collision
+      - collision*
       - stampede
-      - suicide
-      - ప్రమాదం
-      - మరణం
+      - suicide*
+      - ప్రమాద
+      - మరణ
+      - మృతి
 
   court_cases:
     verdict: hold
@@ -109,33 +132,37 @@ groups:
       - high court
       - supreme court
       - court
-      - verdict
+      - courts
+      - verdict*
       - bail
-      - petition
-      - కోర్టు
+      - petition*
+      - కోర్ట
 
   religion:
     verdict: hold
     description: Religion-related stories.
     keywords:
-      - temple
-      - mosque
+      - temple*
+      - mosque*
       - church
+      - churches
       - religious
-      - idol
-      - procession
-      - ఆలయం
-      - మసీదు
+      - idol*
+      - procession*
+      - ఆలయ
+      - మసీద
 
   health_claims:
     verdict: hold
     description: Health claims and cures.
     keywords:
       - cure
+      - cures
       - miracle
-      - outbreak
-      - epidemic
-      - vaccine
+      - outbreak*
+      - epidemic*
+      - vaccine*
       - cancer
       - herbal remedy
+      - herbal remedies
       - side effects
