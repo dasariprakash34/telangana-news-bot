@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>తెలుగు వార్తలు</title>
+    <link>https://telugu.example.com/</link>
+    <description>Recorded sample Telugu feed</description>
+    <item>
+      <title>హైదరాబాద్‌లో ఉద్యోగ మేళా</title>
+      <link>https://telugu.example.com/job-mela</link>
+      <description>నిరుద్యోగ యువతకు ఉద్యోగ అవకాశాలు కల్పించేందుకు మేళా నిర్వహించారు.</description>
+      <pubDate>Tue, 27 Oct 2026 06:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>చెన్నైలో వర్షాలు</title>
+      <link>https://telugu.example.com/chennai-rain</link>
+      <description>చెన్నైలో భారీ వర్షాలు కురిశాయి.</description>
+      <pubDate>Tue, 27 Oct 2026 05:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

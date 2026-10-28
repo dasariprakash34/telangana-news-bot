@@ -1,0 +1,6 @@
+# RSS sources for tgnews. Add only feeds whose terms allow republishing summaries.
+feeds: []
+# Example format:
+# feeds:
+#   - name: Example Telangana News
+#     url: https://news.example.com/telangana/rss.xml

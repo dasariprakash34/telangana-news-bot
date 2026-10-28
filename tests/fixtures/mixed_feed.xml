@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample City News</title>
+    <link>https://news.example.com/</link>
+    <description>Recorded sample feed</description>
+    <item>
+      <title>Heavy rain lashes Hyderabad, waterlogging in several colonies</title>
+      <link>https://news.example.com/hyderabad-rain</link>
+      <description>&lt;p&gt;Heavy rain with thunder hit &lt;b&gt;Hyderabad&lt;/b&gt; on Monday evening; the weather office issued an alert.&lt;/p&gt;</description>
+      <pubDate>Mon, 26 Oct 2026 14:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Warangal farmers see record cotton procurement</title>
+      <link>https://news.example.com/warangal-cotton</link>
+      <description>Cotton farmers in Warangal market yard reported higher procurement prices this season.</description>
+      <pubDate>Mon, 26 Oct 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Mumbai local trains delayed after signal failure</title>
+      <link>https://news.example.com/mumbai-trains</link>
+      <description>Commuters in Mumbai faced long delays on the central line.</description>
+      <pubDate>Mon, 26 Oct 2026 08:15:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
