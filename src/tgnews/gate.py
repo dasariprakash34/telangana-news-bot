@@ -238,7 +238,7 @@ def _candidate(old_caption: str, new_caption: str) -> RewrittenPost:
 
 
 # -- expiry -----------------------------------------------------------------
-def expire_old_drafts(engine: Engine, now: datetime, max_age_hours: int = 6) -> int:
+def expire_old_drafts(engine: Engine, now: datetime, max_age_hours: int = 5) -> int:
     """Mark draft posts older than ``max_age_hours`` (by created_at) as expired. Approved posts
     are never touched. Returns the number expired."""
     cutoff = db._utc(now) - timedelta(hours=max_age_hours)
