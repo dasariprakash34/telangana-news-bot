@@ -29,7 +29,7 @@ from .llm import LLM_AUTH_ERRORS
 from .instagram import InstagramClient, InstagramError
 from .models import PostState, Story
 from .render import ShapingUnavailable, assert_shaping_available, render_card, render_carousel
-from .rewrite import DEFAULT_MODEL, STYLES, TOPICS, RewriteFailed, RewrittenPost, rewrite
+from .rewrite import DEFAULT_MODEL, STYLES, TOPICS, RewriteFailed, RewriteUnavailable, RewrittenPost, rewrite
 from .safety import BlocklistError, Verdict
 from .storage import StorageError
 
@@ -163,7 +163,7 @@ def compose_caption(post: RewrittenPost) -> str:
 
 
 AUTH_CODES = (190, 102)
-_INFRA = (StorageError, gate.TelegramError, publish.PublishError, InstagramError)
+_INFRA = (RewriteUnavailable, StorageError, gate.TelegramError, publish.PublishError, InstagramError)
 
 
 def is_auth_failure(exc: BaseException) -> bool:

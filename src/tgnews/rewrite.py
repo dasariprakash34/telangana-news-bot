@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from tgnews.llm import LLM_AUTH_ERRORS
+from tgnews.llm import LLM_AUTH_ERRORS, LLMRateLimited
 from tgnews.models import Story
 
 log = logging.getLogger(__name__)
@@ -56,6 +56,12 @@ _STYLE_GUIDE = {
 
 class RewriteFailed(Exception):
     """Raised when no valid rewrite could be produced."""
+
+
+class RewriteUnavailable(RewriteFailed):
+    """The LLM could not be reached or refused the call (outage, quota, 5xx), as opposed to
+    returning unusable content. The pipeline treats this as an infrastructure failure so a
+    provider outage does not mark the whole feed as seen."""
 
 
 @dataclass
@@ -195,7 +201,9 @@ def rewrite(
 
     problems: list[str] | None = None
     last_exc: BaseException | None = None
+    last_was_client_error = False
     for _attempt in range(2):
+        last_was_client_error = False
         try:
             response = client.messages.create(
                 model=model,
@@ -211,6 +219,9 @@ def rewrite(
             log.warning("rewrite attempt failed: client error: %r", exc)
             problems = [f"client error: {exc!r}"]
             last_exc = exc
+            last_was_client_error = True
+            if isinstance(exc, LLMRateLimited):  # a second call would only burn more quota
+                break
             continue
         if getattr(response, "stop_reason", None) == "max_tokens":
             log.warning("rewrite attempt failed: reply truncated at max_tokens")
@@ -231,6 +242,7 @@ def rewrite(
         if not problems:
             return post
         last_exc = ValueError("; ".join(problems))
-    raise RewriteFailed(
-        "rewrite failed after 2 attempts: " + "; ".join(problems or [])
-    ) from last_exc
+    # Rule: unavailable iff the LAST attempt failed in the client call (transport/LLM error);
+    # if it returned content that was bad, it is a content failure (the story stays seen).
+    cls = RewriteUnavailable if last_was_client_error else RewriteFailed
+    raise cls("rewrite failed after 2 attempts: " + "; ".join(problems or [])) from last_exc

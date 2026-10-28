@@ -26,6 +26,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 TIMEOUT_SECONDS = 60.0
 PROVIDERS = ("gemini", "anthropic")
+# Thinking-capable models spend the output budget on thinking and Telugu is token-expensive, so
+# never ask for less than this; callers' own limits still apply through their validation.
+MIN_OUTPUT_TOKENS = 8192
 _BAD_FINISH = {"SAFETY", "RECITATION", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
 
 try:  # anthropic is an optional extra
@@ -39,11 +42,19 @@ class LLMError(Exception):
     Messages are sanitized and safe to log."""
 
 
+class LLMRateLimited(LLMError):
+    """HTTP 429: quota or rate limit. Retrying immediately only burns more quota."""
+
+
 class LLMAuthError(Exception):
     """The API key was rejected. Must propagate; never retried or swallowed."""
 
 
-LLM_AUTH_ERRORS: tuple[type[BaseException], ...] = (LLMAuthError,)
+class LLMModelError(LLMAuthError):
+    """HTTP 404: the model id is wrong. Fatal (configuration), propagates like an auth error."""
+
+
+LLM_AUTH_ERRORS: tuple[type[BaseException], ...] = (LLMAuthError,)  # includes LLMModelError
 if _anthropic is not None:
     LLM_AUTH_ERRORS += (_anthropic.AuthenticationError, _anthropic.PermissionDeniedError)
 
@@ -59,8 +70,8 @@ class _Response:
     stop_reason: str
 
 
-def _error_info(resp: httpx.Response) -> tuple[str, str]:
-    """(status, reason) strings from a Google error body; tolerant of any shape."""
+def _error_info(resp: httpx.Response) -> tuple[str, str, str]:
+    """(status, reason, message) strings from a Google error body; tolerant of any shape."""
     try:
         err = resp.json().get("error", {})
         status = str(err.get("status") or "")
@@ -69,17 +80,17 @@ def _error_info(resp: httpx.Response) -> tuple[str, str]:
             if isinstance(d, dict) and d.get("reason"):
                 reason = str(d["reason"])
                 break
-        return status, reason
+        return status, reason, str(err.get("message") or "")
     except Exception:
-        return "", ""
+        return "", "", ""
 
 
 def _is_key_problem(code: int, resp: httpx.Response) -> bool:
     if code in (401, 403):
         return True
     if code == 400:
-        status, reason = _error_info(resp)
-        text = f"{status} {reason}".upper()
+        status, reason, message = _error_info(resp)
+        text = f"{status} {reason} {message}".upper().replace("API KEY", "API_KEY")
         return "API_KEY" in text or "UNAUTHENTICATED" in text
     return False
 
@@ -109,7 +120,7 @@ class GeminiClient:
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": m["content"]}]} for m in messages],
-            "generationConfig": {"maxOutputTokens": max_tokens},
+            "generationConfig": {"maxOutputTokens": max(max_tokens, MIN_OUTPUT_TOKENS)},
         }
         url = f"{self._base_url}/models/{model}:generateContent"
         try:
@@ -120,8 +131,10 @@ class GeminiClient:
         code = resp.status_code
         if _is_key_problem(code, resp):
             raise LLMAuthError(f"Gemini rejected the API key (HTTP {code})") from None
+        if code == 404:
+            raise LLMModelError("model not found; check LLM_MODEL") from None
         if code == 429:
-            raise LLMError("Gemini rate limit or quota exceeded (HTTP 429)") from None
+            raise LLMRateLimited("Gemini rate limit or quota exceeded (HTTP 429)") from None
         if code >= 400:
             raise LLMError(f"Gemini returned HTTP {code}") from None
         try:
@@ -142,7 +155,8 @@ def _parse(data: Any) -> _Response:
     content = cand.get("content")
     parts = content.get("parts") if isinstance(content, dict) else None
     text = "".join(p["text"] for p in parts or []
-                   if isinstance(p, dict) and isinstance(p.get("text"), str))
+                   if isinstance(p, dict) and isinstance(p.get("text"), str)
+                   and p.get("thought") is not True)
     if not text.strip():
         raise LLMError("Gemini reply has no text")
     return _Response([_Block(text)], "max_tokens" if finish == "MAX_TOKENS" else "end_turn")

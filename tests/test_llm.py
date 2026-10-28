@@ -57,7 +57,7 @@ def test_success_shape_and_request():
     assert json.loads(req.content) == {
         "systemInstruction": {"parts": [{"text": "SYS"}]},
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
-        "generationConfig": {"maxOutputTokens": 50}}
+        "generationConfig": {"maxOutputTokens": 8192}}
 
 
 def test_key_in_header_never_in_url():
@@ -160,8 +160,8 @@ def test_rewrite_counts_blocked_reply_as_failed_attempt_then_fails():
     assert len(seen) == 2 and isinstance(ei.value.__cause__, LLMError)
 
 
-def test_rewrite_recovers_after_transient_429():
-    replies = iter([httpx.Response(429), httpx.Response(200, json=ok_body(json.dumps(GOOD)))])
+def test_rewrite_recovers_after_transient_503():
+    replies = iter([httpx.Response(503), httpx.Response(200, json=ok_body(json.dumps(GOOD)))])
     c, seen = client_for(lambda r: next(replies))
     assert rewrite(STORY, c, "statement", "m-1").topic == "weather"
     assert len(seen) == 2
@@ -289,3 +289,104 @@ def test_default_install_works_without_anthropic(monkeypatch):
         for k in [k for k in sys.modules if k.startswith("tgnews")]:
             del sys.modules[k]
         sys.modules.update(saved)
+
+
+# --- review fixes ---
+from tgnews.llm import LLMModelError, LLMRateLimited  # noqa: E402
+from tgnews.rewrite import RewriteUnavailable  # noqa: E402
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+from test_pipeline import FakeTG, engine, make_deps, settings, story  # noqa: E402,F401  (fixtures/helpers)
+
+
+def test_max_output_tokens_has_safety_margin_and_keeps_larger_requests():
+    c, seen = client_for(lambda r: httpx.Response(200, json=ok_body("x")))
+    c.messages.create(model="m", max_tokens=100, system="s", messages=[{"role": "user", "content": "h"}])
+    c.messages.create(model="m", max_tokens=9000, system="s", messages=[{"role": "user", "content": "h"}])
+    assert [json.loads(r.content)["generationConfig"]["maxOutputTokens"] for r in seen] == [8192, 9000]
+
+
+def test_400_key_problem_detected_from_message_without_details():
+    for msg in ("API key not valid. Please pass a valid API key.", "api_key missing"):
+        c, _ = client_for(lambda r, m=msg: httpx.Response(400, json={"error": {"message": m}}))
+        with pytest.raises(LLMAuthError):
+            call(c)
+
+
+def test_404_is_fatal_model_error_without_body_or_key():
+    c, _ = client_for(lambda r: httpx.Response(404, json={"error": {"message": f"models/x {KEY}"}}))
+    with pytest.raises(LLMModelError) as ei:
+        call(c)
+    assert str(ei.value) == "model not found; check LLM_MODEL" and KEY not in repr(ei.value)
+    assert issubclass(LLMModelError, LLMAuthError) and LLMAuthError in LLM_AUTH_ERRORS
+    with pytest.raises(LLMModelError):
+        rewrite(STORY, c, "statement", "m-1")
+
+
+def test_thought_parts_are_skipped():
+    body = {"candidates": [{"content": {"parts": [{"text": "thinking...", "thought": True},
+                                                  {"text": "answer"}]}}]}
+    c, _ = client_for(lambda r: httpx.Response(200, json=body))
+    assert call(c).content[0].text == "answer"
+
+
+def test_429_skips_second_attempt_and_raises_unavailable():
+    c, seen = client_for(lambda r: httpx.Response(429))
+    with pytest.raises(RewriteUnavailable) as ei:
+        rewrite(STORY, c, "statement", "m-1")
+    assert len(seen) == 1 and isinstance(ei.value.__cause__, LLMRateLimited)
+
+
+def test_rewrite_failure_kinds():
+    c, _ = client_for(lambda r: httpx.Response(503))
+    with pytest.raises(RewriteUnavailable):
+        rewrite(STORY, c, "statement", "m-1")
+    # mixed: transport error first, invalid content last -> content failure
+    replies = iter([httpx.Response(503), httpx.Response(200, json=ok_body("not json"))])
+    c, _ = client_for(lambda r: next(replies))
+    with pytest.raises(RewriteFailed) as ei:
+        rewrite(STORY, c, "statement", "m-1")
+    assert not isinstance(ei.value, RewriteUnavailable)
+    # mixed the other way: content first, transport last -> unavailable
+    replies = iter([httpx.Response(200, json=ok_body("not json")), httpx.Response(503)])
+    c, _ = client_for(lambda r: next(replies))
+    with pytest.raises(RewriteUnavailable):
+        rewrite(STORY, c, "statement", "m-1")
+
+
+def test_llm_outage_releases_claims_and_aborts_run(engine, tmp_path):
+    c, seen = client_for(lambda r: httpx.Response(503))
+    stories = [story(i) for i in range(1, 6)]
+    with pytest.raises(pipeline.PipelineError, match="infrastructure"):
+        pipeline.run_once(settings(), make_deps(engine, tmp_path, stories, llm=c, tg=FakeTG()))
+    assert len(seen) <= 4
+    assert all(db.save_story(engine, s) for s in stories)  # none was left marked seen
+
+
+def test_quota_429_burst_releases_claims_and_aborts(engine, tmp_path):
+    c, seen = client_for(lambda r: httpx.Response(429))
+    stories = [story(i) for i in range(1, 6)]
+    with pytest.raises(pipeline.PipelineError):
+        pipeline.run_once(settings(), make_deps(engine, tmp_path, stories, llm=c, tg=FakeTG()))
+    assert len(seen) <= 4
+    assert all(db.save_story(engine, s) for s in stories)
+
+
+def test_invalid_content_failures_still_mark_stories_seen(engine, tmp_path):
+    c, _ = client_for(lambda r: httpx.Response(200, json=ok_body("not json")))
+    stories = [story(1), story(2)]
+    summary = pipeline.run_once(settings(), make_deps(engine, tmp_path, stories, llm=c, tg=FakeTG()))
+    assert summary.failed == 2
+    assert not any(db.save_story(engine, s) for s in stories)  # already seen
+
+
+def test_wrong_model_404_aborts_run(engine, tmp_path):
+    c, seen = client_for(lambda r: httpx.Response(404))
+    with pytest.raises(LLMModelError):
+        pipeline.run_once(settings(), make_deps(engine, tmp_path, [story(1), story(2)], llm=c, tg=FakeTG()))
+    assert len(seen) == 1
+
+
+def test_settings_reject_unknown_provider_without_echo():
+    with pytest.raises(ConfigError) as ei:
+        config.Settings.from_env({"LLM_PROVIDER": "weirdprovider"})
+    assert "weirdprovider" not in str(ei.value)

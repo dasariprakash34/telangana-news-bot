@@ -65,6 +65,13 @@ def _parse_per_run_cap(raw: str | None) -> int | None:
     return n
 
 
+def _parse_provider(raw: str | None) -> str:
+    value = (raw or "").strip().lower() or "gemini"
+    if value not in ("gemini", "anthropic"):
+        raise ConfigError("LLM_PROVIDER must be one of ('gemini', 'anthropic')")
+    return value
+
+
 def normalize_database_url(url: str) -> str:
     """Hosting dashboards hand out `postgres://` or `postgresql://`; SQLAlchemy would then pick the
     psycopg2 driver, which is not installed. Map both to psycopg 3. Other schemes are untouched."""
@@ -110,6 +117,6 @@ class Settings:
             time_slots=_parse_slots(env.get("TIME_SLOTS")),
             active_slot_count=_parse_active_count(env.get("ACTIVE_SLOT_COUNT")),
             per_run_cap=_parse_per_run_cap(env.get("PER_RUN_CAP")),
-            llm_provider=(env.get("LLM_PROVIDER") or "").strip().lower() or "gemini",
+            llm_provider=_parse_provider(env.get("LLM_PROVIDER")),
             llm_model=(env.get("LLM_MODEL") or "").strip(),
         )
