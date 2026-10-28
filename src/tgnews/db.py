@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import (JSON, Column, DateTime, Float, ForeignKey, Integer, MetaData,
                         String, Table, Text, insert, select, update)
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 from .models import Post, PostState, Story
 
@@ -56,7 +57,7 @@ learning = Table(
     Column("updated_at", DateTime(timezone=True)),
 )
 
-ANALYSIS_DELAY = timedelta(hours=24)
+ANALYSIS_DELAY = timedelta(hours=48)
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -73,17 +74,21 @@ def init(engine: Engine) -> None:
 
 
 def save_story(engine: Engine, story: Story) -> None:
-    """Insert a story; no-op if its id or url is already stored."""
-    with engine.begin() as conn:
-        exists = conn.execute(
-            select(stories.c.id).where((stories.c.url == story.url) | (stories.c.id == story.id))
-        ).first()
-        if exists:
-            return
-        conn.execute(insert(stories).values(
-            id=story.id, title=story.title, summary=story.summary, url=story.url,
-            source_name=story.source_name, published_at=_utc(story.published_at),
-            topic_hint=story.topic_hint))
+    """Insert a story; no-op if its id or url is already stored (race-safe)."""
+    try:
+        with engine.begin() as conn:
+            exists = conn.execute(
+                select(stories.c.id).where((stories.c.url == story.url) | (stories.c.id == story.id))
+            ).first()
+            if exists:
+                return
+            conn.execute(insert(stories).values(
+                id=story.id, title=story.title, summary=story.summary, url=story.url,
+                source_name=story.source_name, published_at=_utc(story.published_at),
+                topic_hint=story.topic_hint))
+    except IntegrityError:
+        # Concurrent ingestion inserted the same id/url between check and insert.
+        pass
 
 
 def story_seen(engine: Engine, url: str) -> bool:
@@ -126,7 +131,7 @@ def update_post_state(engine: Engine, post_id: int, state: PostState, *,
 
 
 def posts_due_for_analysis(engine: Engine, now: datetime) -> list[Post]:
-    """Published posts at least 24h old that have no metrics recorded yet."""
+    """Published posts at least 48h old that have no metrics recorded yet."""
     cutoff = _utc(now) - ANALYSIS_DELAY
     with engine.connect() as conn:
         rows = conn.execute(

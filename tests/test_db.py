@@ -39,3 +39,34 @@ def test_post_state_roundtrip(engine):
     now = datetime(2026, 10, 29, tzinfo=timezone.utc)
     assert [x.id for x in db.posts_due_for_analysis(engine, now)] == [pid]
     assert db.posts_due_for_analysis(engine, now - timedelta(days=3)) == []
+
+
+def test_posts_due_for_analysis_48h_boundary(engine):
+    db.save_story(engine, make_story())
+    now = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
+    ids = {}
+    for hours in (24, 47, 48, 72):
+        pid = db.save_post(engine, story_id="s1", format="single", state=PostState.draft)
+        db.update_post_state(engine, pid, PostState.published, media_id=f"m{hours}",
+                             posted_at=now - timedelta(hours=hours))
+        ids[hours] = pid
+    due = {p.id for p in db.posts_due_for_analysis(engine, now)}
+    assert due == {ids[48], ids[72]}
+
+
+def test_save_story_twice_does_not_raise(engine):
+    db.save_story(engine, make_story())
+    db.save_story(engine, make_story())
+
+
+def test_save_story_integrity_error_is_noop(engine, monkeypatch):
+    # Simulate the race: the pre-check misses, the insert hits the unique constraint.
+    db.save_story(engine, make_story())
+    monkeypatch.setattr(db, "select", lambda *a, **k: _EmptySelect())
+    db.save_story(engine, make_story())
+
+
+class _EmptySelect:
+    def where(self, *a, **k):
+        from sqlalchemy import literal, select as real
+        return real(literal(1)).where(literal(False))
