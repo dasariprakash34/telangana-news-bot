@@ -53,7 +53,7 @@ def test_over_30_picks_best_about_80_percent(engine):
     rng = random.Random(2)
     c = Counter(learn.choose(engine, "format", learn.FORMATS, rng) for _ in range(2000))
     # 0.8 exploit + 0.2 * 0.5 explore = 0.9 for the winner
-    assert 0.85 * 2000 <= c["carousel"] <= 0.95 * 2000
+    assert 0.88 * 2000 <= c["carousel"] <= 0.92 * 2000
 
 
 def test_options_with_fewer_than_3_posts_never_win(engine):
@@ -107,3 +107,51 @@ def test_update_learning_computes_means_and_is_idempotent(engine):
     learn.update_learning(engine)
     assert db.get_learning(engine, "format") == first
     assert db.get_learning(engine, "topic")["politics"][1] == 3
+
+
+def test_exactly_30_scored_posts_starts_exploiting(engine):
+    fill(engine, 15, fmt="card")
+    for _ in range(15):
+        add(engine, 0.5, fmt="carousel")
+    learn.update_learning(engine)
+    rng = random.Random(4)
+    c = Counter(learn.choose(engine, "format", learn.FORMATS, rng) for _ in range(2000))
+    assert 0.88 * 2000 <= c["carousel"] <= 0.92 * 2000
+
+
+def test_n29_does_not_exploit_even_with_learning_rows(engine):
+    fill(engine, 14, fmt="card")
+    for _ in range(15):
+        add(engine, 0.5, fmt="carousel")
+    learn.update_learning(engine)
+    rng = random.Random(4)
+    c = Counter(learn.choose(engine, "format", learn.FORMATS, rng) for _ in range(2000))
+    assert 0.45 * 2000 <= c["carousel"] <= 0.55 * 2000
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_empty_or_stale_learning_table_is_uniform(engine, stale):
+    for _ in range(35):
+        add(engine, 0.3, fmt="card")
+    if stale:
+        db.replace_learning(engine, [("format", "carousel", 0.9, 1)])  # n < 3: no qualifier
+    rng = random.Random(5)
+    c = Counter(learn.choose(engine, "format", learn.FORMATS, rng) for _ in range(1000))
+    assert 420 <= c["card"] <= 580 and 420 <= c["carousel"] <= 580
+
+
+def test_non_finite_scores_are_ignored(engine):
+    from sqlalchemy import update
+    add(engine, 0.2)
+    pid = add(engine, 0.0)
+    with engine.begin() as c:
+        c.execute(update(db.posts).where(db.posts.c.id == pid).values(metrics={"score": float("nan")}))
+    pid = add(engine, 0.0)
+    with engine.begin() as c:
+        c.execute(update(db.posts).where(db.posts.c.id == pid).values(metrics={"score": float("inf")}))
+    assert [p["score"] for p in db.scored_posts(engine)] == [0.2]
+
+
+def test_time_slot_rejects_trailing_newline(engine):
+    with pytest.raises(ValueError):
+        learn.choose(engine, "time_slot", ("09:00\n",), random.Random(0))

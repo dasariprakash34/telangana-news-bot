@@ -80,3 +80,24 @@ def test_report_auth_errors_propagate():
     exc = anthropic.AuthenticationError("bad", response=resp, body=None)
     with pytest.raises(anthropic.AuthenticationError):
         report.weekly_report(make(40), FakeClient(exc=exc), NOW)
+
+
+FACTS = '{"a": 0.1234, "b": 34, "slot": "09:00", "n": 40}'
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("Mean 0.12 over 40 posts", True),
+    ("Mean 0.1234", True),
+    ("Best slot 9:00", True),
+    ("Best slot 09:00", True),
+    ("Score 0.34", False),
+    ("Share was 34%", True),
+    ("Share was 12%", False),
+    ("Mean 0.13", False),
+])
+def test_numbers_ok_compares_values(text, ok):
+    assert report._numbers_ok(text, FACTS) is ok
+
+
+def test_system_prompt_requires_verbatim_values_and_slot_names():
+    assert "verbatim" in report.SYSTEM_PROMPT and "slot names" in report.SYSTEM_PROMPT

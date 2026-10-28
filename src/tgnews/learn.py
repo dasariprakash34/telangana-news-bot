@@ -19,7 +19,7 @@ FORMATS = ("card", "carousel")
 SCORED_THRESHOLD = 30
 MIN_N_PER_OPTION = 3
 EXPLOIT_PROBABILITY = 0.8
-_SLOT_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_SLOT_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 _FIXED = {"topic": TOPICS, "format": FORMATS, "headline_style": STYLES}
 
@@ -31,7 +31,7 @@ def validate_options(attribute: str, options) -> list[str]:
     if not opts:
         raise ValueError("options must not be empty")
     for o in opts:
-        ok = (isinstance(o, str) and _SLOT_RE.match(o)) if attribute == "time_slot" \
+        ok = (isinstance(o, str) and _SLOT_RE.fullmatch(o)) if attribute == "time_slot" \
             else o in _FIXED[attribute]
         if not ok:
             raise ValueError(f"option {o!r} is not allowed for {attribute}")

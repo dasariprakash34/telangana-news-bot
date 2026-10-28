@@ -1,6 +1,7 @@
 """Persistence via SQLAlchemy Core; portable across SQLite (tests) and Postgres."""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -280,7 +281,8 @@ def scored_posts(engine: Engine) -> list[dict]:
     for r in rows:
         m = r.metrics
         score = m.get("score") if isinstance(m, dict) else None
-        if isinstance(score, bool) or not isinstance(score, (int, float)):
+        if (isinstance(score, bool) or not isinstance(score, (int, float))
+                or not math.isfinite(score)):
             continue
         out.append({"id": r.id, "topic": r.topic, "format": r.format, "time_slot": r.time_slot,
                     "headline_style": r.headline_style, "score": float(score),
