@@ -33,3 +33,25 @@ def test_daily_cap_override():
 def test_daily_cap_invalid_raises(bad):
     with pytest.raises(ValueError, match="DAILY_CAP"):
         Settings.from_env({"DAILY_CAP": bad})
+
+
+def test_brand_and_slot_defaults():
+    s = Settings.from_env({})
+    assert s.brand_name == "Telangana News"
+    assert s.time_slots == ("02:00", "07:00", "13:00", "15:30")
+    assert s.active_slot_count == 3
+
+
+def test_brand_and_slot_overrides():
+    s = Settings.from_env({"BRAND_NAME": "TG Now", "TIME_SLOTS": "01:00, 09:30", "ACTIVE_SLOT_COUNT": "2"})
+    assert (s.brand_name, s.time_slots, s.active_slot_count) == ("TG Now", ("01:00", "09:30"), 2)
+
+
+@pytest.mark.parametrize("env", [{"TIME_SLOTS": "25:00"}, {"TIME_SLOTS": "7:00"}, {"TIME_SLOTS": ""},
+                                 {"ACTIVE_SLOT_COUNT": "0"}, {"ACTIVE_SLOT_COUNT": "x"}])
+def test_bad_slot_settings_raise(env):
+    if env == {"TIME_SLOTS": ""}:  # blank means default, not an error
+        assert Settings.from_env(env).time_slots == ("02:00", "07:00", "13:00", "15:30")
+        return
+    with pytest.raises(ValueError):
+        Settings.from_env(env)

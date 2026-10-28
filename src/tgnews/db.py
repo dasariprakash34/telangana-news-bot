@@ -239,6 +239,32 @@ def list_posts_by_state(engine: Engine, state: PostState) -> list[Post]:
     return [_row_to_post(r) for r in rows]
 
 
+def count_posts_since(engine: Engine, since: datetime, exclude: tuple[PostState, ...]) -> int:
+    """Posts created at or after `since` whose state is not in `exclude` (daily-cap accounting)."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(posts.c.created_at).where(
+            posts.c.created_at.is_not(None),
+            posts.c.state.not_in([s.value for s in exclude]))).all()
+    since = _utc(since)
+    return sum(1 for (c,) in rows if _utc(c) >= since)
+
+
+def recent_titles(engine: Engine, since: datetime) -> list[str]:
+    """Titles of stories saved with a publication time at or after `since`."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(stories.c.title, stories.c.published_at)).all()
+    since = _utc(since)
+    return [t for t, p in rows if _utc(p) >= since]
+
+
+def latest_draft(engine: Engine, post_id: int) -> dict | None:
+    """Most recent drafts row for a post: {"caption", "slides"} (public image URLs)."""
+    with engine.connect() as conn:
+        row = conn.execute(select(drafts).where(drafts.c.post_id == post_id)
+                           .order_by(drafts.c.id.desc())).first()
+    return {"caption": row.caption, "slides": list(row.slides or [])} if row else None
+
+
 def get_kv(engine: Engine, key: str) -> str | None:
     with engine.connect() as conn:
         row = conn.execute(select(kv.c.value).where(kv.c.key == key)).first()

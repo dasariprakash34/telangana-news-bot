@@ -17,6 +17,9 @@ dependencies = [
   "pyyaml",
 ]
 
+[project.scripts]
+tgnews = "tgnews.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest"]
 
