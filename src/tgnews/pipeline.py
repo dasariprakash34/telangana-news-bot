@@ -73,6 +73,7 @@ class RunSummary:
     new: int = 0
     skipped_blocked: int = 0
     skipped_stale: int = 0
+    skipped_duplicate: int = 0
     drafted: int = 0
     held: int = 0
     published: int = 0
@@ -109,6 +110,8 @@ def _minutes(slot: str) -> int:
 
 
 def nearest_slot(slots, now: datetime) -> str:
+    if not slots:
+        raise ValueError("time_slots must not be empty")
     now = _aware(now)
     cur = now.hour * 60 + now.minute
 
@@ -122,6 +125,8 @@ def nearest_slot(slots, now: datetime) -> str:
 def active_slots(settings: Settings, now: datetime, engine: Engine) -> tuple[str, ...]:
     """The day's active slots: picked by the bandit without replacement, seeded by the UTC date
     and stored in kv so later firings (even after the learning table changes) agree."""
+    if not settings.time_slots:
+        raise ValueError("time_slots must not be empty")
     day = _aware(now).strftime("%Y%m%d")
     count = min(settings.active_slot_count, len(settings.time_slots))
     stored = db.get_kv(engine, f"active_slots:{day}")
@@ -142,6 +147,21 @@ def active_slots(settings: Settings, now: datetime, engine: Engine) -> tuple[str
 def compose_caption(post: RewrittenPost) -> str:
     extra = [h for h in post.hashtags if h not in post.caption_te]
     return post.caption_te + ("\n\n" + " ".join(extra) if extra else "")
+
+
+AUTH_CODES = (190, 102)
+
+
+def is_auth_failure(exc: BaseException) -> bool:
+    status = getattr(exc, "cause_status", None) or getattr(exc, "status", None)
+    code = getattr(exc, "cause_code", None) or getattr(exc, "code", None)
+    return isinstance(exc, (InstagramError, publish.PublishError)) and (
+        status == 401 or code in AUTH_CODES)
+
+
+def _abort_auth(exc: BaseException) -> PipelineError:
+    return PipelineError(f"Instagram authentication failed ({sanitize_error(exc)}); run aborted. "
+                         "Refresh the token")
 
 
 def _pick_story(candidates: list[Story], topic: str) -> Story:
@@ -241,6 +261,8 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
             summary.failed += 1
             summary.errors.append(f"{story.id}: {sanitize_error(exc)}")
             log.warning("story %s failed: %s", story.id, sanitize_error(exc))
+            if is_auth_failure(exc):
+                raise _abort_auth(exc) from None
     return summary
 
 
@@ -250,7 +272,11 @@ def _process(ctx: _Ctx, story: Story) -> None:
     if verdict is Verdict.BLOCK:
         s.skipped_blocked += 1
         return
-    db.save_story(engine, story)  # seen from here on, even if a later stage fails
+    # Atomic claim, before any rewrite/upload/post work: an overlapping run that got here first
+    # owns the story. Seen from here on, even if a later stage fails.
+    if not db.save_story(engine, story):
+        s.skipped_duplicate += 1
+        return
     style = learn.choose(engine, "headline_style", STYLES, ctx.rng)
     fmt = learn.choose(engine, "format", FORMATS, ctx.rng)
     rewritten = rewrite(story, deps.llm, style)
@@ -278,6 +304,10 @@ def _process(ctx: _Ctx, story: Story) -> None:
             raise
     if verdict is Verdict.HOLD:
         s.held += 1
+        if deps.telegram is None:
+            msg = f"{story.id}: held draft saved but no Telegram client; it cannot be reviewed"
+            log.warning(msg)
+            s.errors.append(msg)
     else:
         s.drafted += 1
 
@@ -318,10 +348,8 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
         if approved:
             raise PipelineError("approved posts exist but no Instagram client is configured")
         return out
+    _check_token(engine, now)  # before any Instagram call, reconcile included
     out.reconciled = len(publish.reconcile_publishing(engine, deps.instagram, now))
-    approved = db.list_posts_by_state(engine, PostState.approved)  # reconcile may not change these
-    if approved:
-        _check_token(engine, now)
     for post in approved:
         try:
             draft = db.latest_draft(engine, post.id)
@@ -336,4 +364,6 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
         except Exception as exc:
             out.failed += 1
             out.errors.append(f"post {post.id}: {sanitize_error(exc)}")
+            if is_auth_failure(exc):
+                raise _abort_auth(exc) from None
     return out

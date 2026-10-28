@@ -58,14 +58,15 @@ class FakeIG:
     ig_user_id = "IG1"
 
     def __init__(self, fail_create=False):
-        self.calls, self.fail_create, self.n = [], fail_create, 0
+        self.calls, self.fail_create, self.n, self.created = [], fail_create, 0, []
 
     def post(self, path, **p):
         self.calls.append(("POST", path))
         if path.endswith("/media_publish"):
             return {"id": "MEDIA1"}
         if self.fail_create:
-            raise InstagramError("create failed")
+            raise self.fail_create if isinstance(self.fail_create, Exception) else InstagramError("create failed")
+        self.created.append(p)
         self.n += 1
         return {"id": f"C{self.n}"}
 
@@ -347,7 +348,9 @@ def test_publish_approved_publishes_only_approved_using_drafts_urls(engine, tmp_
     assert result.published == 1 and result.failed == 0
     assert db.get_post(engine, ids[PostState.approved]).state is PostState.published
     assert db.get_post(engine, ids[PostState.draft]).state is PostState.draft
-    assert [c for c in ig.calls if c[1] == "IG1/media"]  # container created
+    [created] = ig.created
+    assert created["caption"] == "caption approved"  # posts.caption, not the drafts "old"
+    assert created["image_url"] == "https://cdn.example.com/approved.jpg"  # drafts URL
     assert len([c for c in ig.calls if c[1].endswith("/media_publish")]) == 1
 
 
@@ -360,3 +363,72 @@ def test_publish_approved_isolates_failures(engine, tmp_path):
             c.execute(db.drafts.insert().values(post_id=pid, caption="c", slides=["https://cdn.example.com/a.jpg"]))
     result = publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG(fail_create=True)))
     assert result.failed == 2 and result.published == 0 and len(result.errors) == 2
+
+
+def test_overlapping_run_claim_prevents_double_post(engine, tmp_path, monkeypatch):
+    s1 = story(1)
+    db.save_story(engine, s1)  # another run already claimed it
+    monkeypatch.setattr(pipeline.db, "story_seen", lambda e, u: False)
+    monkeypatch.setattr(pipeline.db, "recent_titles", lambda e, since: [])
+    ig, tg = FakeIG(), FakeTG()
+    deps = make_deps(engine, tmp_path, [s1], ig=ig, tg=tg, llm=FakeLLM())
+    for mode in ("review", "auto"):
+        summary = run_once(settings(mode=mode), deps)
+        assert summary.skipped_duplicate == 1 and summary.drafted == summary.published == 0
+    assert all_posts(engine) == [] and deps.uploads == [] and ig.calls == [] and tg.calls == []
+    assert deps.llm.calls == []
+
+
+def test_save_story_reports_whether_it_inserted(engine):
+    assert db.save_story(engine, story(1)) is True
+    assert db.save_story(engine, story(1)) is False
+
+
+def auth_err():
+    return InstagramError("bad token", status=401, code=190)
+
+
+def test_auth_failure_aborts_run_and_leaves_rest_unseen(engine, tmp_path):
+    ig = FakeIG(fail_create=auth_err())
+    deps = make_deps(engine, tmp_path, [story(1), story(2), story(3)], ig=ig)
+    with pytest.raises(pipeline.PipelineError) as ei:
+        run_once(settings(mode="auto"), deps)
+    assert "authentication" in str(ei.value)
+    seen = [db.story_seen(engine, f"https://example.com/{n}") for n in (1, 2, 3)]
+    assert sum(seen) == 1  # only the story whose publish failed
+    assert [p.state for p in all_posts(engine)] == [PostState.failed]
+
+
+def test_publish_approved_auth_failure_aborts(engine, tmp_path):
+    db.save_story(engine, story(1))
+    for _ in range(2):
+        pid = db.save_post(engine, story_id="s1", format="card", state=PostState.approved)
+        db.set_post_caption(engine, pid, "c")
+        with engine.begin() as c:
+            c.execute(db.drafts.insert().values(post_id=pid, caption="c", slides=["https://cdn.example.com/a.jpg"]))
+    ig = FakeIG(fail_create=auth_err())
+    with pytest.raises(pipeline.PipelineError):
+        publish_approved(settings(), make_deps(engine, tmp_path, [], ig=ig))
+    assert len(db.list_posts_by_state(engine, PostState.approved)) == 1  # second untouched
+
+
+def test_publish_approved_token_guard_runs_before_reconcile(engine, tmp_path, monkeypatch):
+    db.set_kv(engine, pipeline.publish.KV_TOKEN_EXPIRES, "2020-01-01T00:00:00+00:00")
+    order = []
+    monkeypatch.setattr(pipeline.publish, "reconcile_publishing", lambda *a, **k: order.append("reconcile") or [])
+    with pytest.raises(pipeline.PipelineError):
+        publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG()))
+    assert order == []
+
+
+def test_held_without_telegram_warns_in_errors(engine, tmp_path):
+    flagged = story(1, title="Man arrested in Hyderabad over theft")
+    summary = run_once(settings(mode="auto"), make_deps(engine, tmp_path, [flagged], ig=FakeIG()))
+    assert summary.held == 1 and any("cannot be reviewed" in e for e in summary.errors)
+
+
+def test_empty_time_slots_raise_clear_error(engine):
+    with pytest.raises(ValueError, match="time_slots"):
+        nearest_slot((), NOW)
+    with pytest.raises(ValueError, match="time_slots"):
+        active_slots(settings(time_slots=()), NOW, engine)

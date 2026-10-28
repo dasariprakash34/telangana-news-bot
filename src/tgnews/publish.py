@@ -30,7 +30,14 @@ MAX_CHILDREN = 10
 
 
 class PublishError(Exception):
-    pass
+    """`cause_status`/`cause_code` carry the numeric HTTP status / Graph code of an underlying
+    InstagramError (never text), so callers can recognise auth failures."""
+
+    def __init__(self, message: str = "", *, cause_status: int | None = None,
+                 cause_code: int | None = None):
+        super().__init__(message)
+        self.cause_status = cause_status
+        self.cause_code = cause_code
 
 
 class AlreadyPublishing(PublishError):
@@ -117,7 +124,8 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
         log.warning("post %s failed before publish: %s", post_id, _safe(exc))
         if isinstance(exc, PublishError):
             raise
-        raise PublishError(f"post {post_id} failed before publishing: {_safe(exc)}") from None
+        raise PublishError(f"post {post_id} failed before publishing: {_safe(exc)}",
+                           **_cause(exc)) from None
 
     # From here the outcome of the single media_publish call is the only thing that matters.
     try:
@@ -127,7 +135,8 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
         log.error("post %s: media_publish outcome unknown, left as publishing: %s",
                   post_id, _safe(exc))
         raise PublishError(f"post {post_id}: media_publish outcome unknown ({_safe(exc)}); "
-                           "left as publishing for reconciliation, not retried") from None
+                           "left as publishing for reconciliation, not retried",
+                          **_cause(exc)) from None
     try:
         db.set_post_media(engine, post_id, media_id, datetime.now(timezone.utc))
         db.update_post_state(engine, post_id, PostState.published)
@@ -135,6 +144,12 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
         raise PublishError(f"post {post_id} published as media {media_id} but recording it failed; "
                            "left as publishing, reconcile will fix") from None
     return media_id
+
+
+def _cause(exc: Exception) -> dict:
+    if isinstance(exc, InstagramError):
+        return {"cause_status": exc.status, "cause_code": exc.code}
+    return {}
 
 
 def _safe(exc: Exception) -> str:

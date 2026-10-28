@@ -103,22 +103,24 @@ def init(engine: Engine) -> None:
                 conn.execute(text(f"ALTER TABLE posts ADD COLUMN {name} {ddl}"))
 
 
-def save_story(engine: Engine, story: Story) -> None:
-    """Insert a story; no-op if its id or url is already stored (race-safe)."""
+def save_story(engine: Engine, story: Story) -> bool:
+    """Insert a story; True only if THIS call inserted it, False if its id or url already
+    existed (race-safe). Doubles as an atomic claim on the story."""
     try:
         with engine.begin() as conn:
             exists = conn.execute(
                 select(stories.c.id).where((stories.c.url == story.url) | (stories.c.id == story.id))
             ).first()
             if exists:
-                return
+                return False
             conn.execute(insert(stories).values(
                 id=story.id, title=story.title, summary=story.summary, url=story.url,
                 source_name=story.source_name, published_at=_utc(story.published_at),
                 topic_hint=story.topic_hint))
+            return True
     except IntegrityError:
         # Concurrent ingestion inserted the same id/url between check and insert.
-        pass
+        return False
 
 
 def story_seen(engine: Engine, url: str) -> bool:
