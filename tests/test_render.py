@@ -39,11 +39,11 @@ def test_card_is_1080x1350_jpeg(tmp_path):
         assert im.size == (1080, 1350)
 
 
-def test_carousel_slide_count_between_3_and_5(tmp_path):
+def test_carousel_slide_count_between_2_and_4(tmp_path):
     for n in (1, 2, 3, 4):
         post = RewrittenPost(**{**POST.__dict__, "points_te": POST.points_te[:n] if n > 1 else POST.points_te[:1]})
         paths = render_carousel(post, tmp_path / str(n))
-        assert 3 <= len(paths) <= 5
+        assert 2 <= len(paths) <= 4
         for p in paths:
             with Image.open(p) as im:
                 assert im.format == "JPEG" and im.size == (1080, 1350)
@@ -51,7 +51,7 @@ def test_carousel_slide_count_between_3_and_5(tmp_path):
 
 def test_long_headline_fits_inside_margins(tmp_path, monkeypatch):
     bg = (30, 60, 90)
-    monkeypatch.setitem(render.PALETTE, "other", render.Theme(bg, bg, (255, 255, 255), (255, 255, 255)))
+    monkeypatch.setitem(render.PALETTE, "other", render.Theme(bg, bg, (255, 255, 255), (255, 255, 255), bg))
     headline = ("తెలంగాణ రాష్ట్రంలో ప్రభుత్వం కొత్త పథకాన్ని ప్రారంభించింది " * 3)[:90]
     assert len(headline) == 90
     post = RewrittenPost(**{**POST.__dict__, "headline_te": headline, "topic": "other"})
@@ -104,7 +104,7 @@ def test_brand_is_parameter(tmp_path):
 
 
 def _bg_theme(monkeypatch, bg=(30, 60, 90)):
-    monkeypatch.setitem(render.PALETTE, "other", render.Theme(bg, bg, (255, 255, 255), (255, 255, 255)))
+    monkeypatch.setitem(render.PALETTE, "other", render.Theme(bg, bg, (255, 255, 255), (255, 255, 255), bg))
     return bg
 
 
@@ -137,7 +137,7 @@ def test_carousel_max_points_inside_margins(tmp_path, monkeypatch):
     pts = [LONG_TEXT * 4] * 6
     post = replace(POST, headline_te=LONG_TEXT * 12, points_te=pts, source_credit=HUGE_WORD, topic="other")
     paths = render_carousel(post, tmp_path)
-    assert len(paths) == 5
+    assert len(paths) == 4
     for p in paths:
         _assert_clean_outside_margin(p, bg)
 
@@ -168,7 +168,7 @@ def test_truncation_does_not_split_clusters():
     assert clusters[0] == "క్ష" and not any(c[0] in "్ాిుెైొో" for c in clusters)
 
 
-@pytest.mark.parametrize("n,slides", [(1, 3), (2, 3), (3, 4), (5, 5), (6, 5), (10, 5)])
+@pytest.mark.parametrize("n,slides", [(1, 2), (2, 2), (3, 3), (5, 4), (6, 4), (10, 4)])
 def test_carousel_chunking(tmp_path, n, slides):
     pts = [f"పాయింట్ {i}" for i in range(n)]
     assert all(len(c) <= 2 for c in render._chunk_points(pts))

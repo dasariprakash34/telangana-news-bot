@@ -35,22 +35,28 @@ class Theme:
     bg_bottom: tuple[int, int, int]
     text: tuple[int, int, int]
     muted: tuple[int, int, int]
+    accent: tuple[int, int, int] = (255, 193, 7)
 
 
 # Dark backgrounds with near-white text: contrast ratios are well above WCAG AA (4.5:1).
 PALETTE: dict[str, Theme] = {
-    "politics": Theme((20, 33, 61), (14, 22, 43), (255, 255, 255), (203, 213, 235)),
-    "crime": Theme((59, 18, 24), (38, 10, 15), (255, 255, 255), (232, 205, 208)),
-    "weather": Theme((12, 54, 82), (8, 36, 58), (255, 255, 255), (194, 222, 240)),
-    "jobs": Theme((30, 50, 80), (20, 34, 56), (255, 255, 255), (206, 219, 238)),
-    "farming": Theme((24, 60, 36), (15, 40, 24), (255, 255, 255), (206, 228, 211)),
-    "sports": Theme((14, 62, 62), (8, 42, 42), (255, 255, 255), (196, 228, 228)),
-    "education": Theme((48, 36, 84), (32, 24, 58), (255, 255, 255), (219, 211, 240)),
-    "health": Theme((14, 64, 58), (8, 44, 40), (255, 255, 255), (196, 230, 225)),
-    "business": Theme((52, 40, 20), (36, 27, 12), (255, 255, 255), (232, 220, 196)),
-    "other": Theme((34, 38, 48), (22, 25, 33), (255, 255, 255), (209, 213, 222)),
+    "politics": Theme((20, 33, 61), (14, 22, 43), (255, 255, 255), (203, 213, 235), (255, 183, 77)),
+    "crime": Theme((59, 18, 24), (38, 10, 15), (255, 255, 255), (232, 205, 208), (255, 112, 112)),
+    "weather": Theme((12, 54, 82), (8, 36, 58), (255, 255, 255), (194, 222, 240), (100, 200, 255)),
+    "jobs": Theme((30, 50, 80), (20, 34, 56), (255, 255, 255), (206, 219, 238), (120, 190, 255)),
+    "farming": Theme((24, 60, 36), (15, 40, 24), (255, 255, 255), (206, 228, 211), (140, 220, 120)),
+    "sports": Theme((14, 62, 62), (8, 42, 42), (255, 255, 255), (196, 228, 228), (80, 220, 200)),
+    "education": Theme((48, 36, 84), (32, 24, 58), (255, 255, 255), (219, 211, 240), (190, 160, 255)),
+    "health": Theme((14, 64, 58), (8, 44, 40), (255, 255, 255), (196, 230, 225), (90, 225, 190)),
+    "business": Theme((52, 40, 20), (36, 27, 12), (255, 255, 255), (232, 220, 196), (255, 200, 90)),
+    "other": Theme((34, 38, 48), (22, 25, 33), (255, 255, 255), (209, 213, 222), (255, 193, 7)),
 }
 DEFAULT_THEME = PALETTE["other"]
+TOPIC_LABEL = {
+    "politics": "రాజకీయాలు", "crime": "క్రైమ్", "weather": "వాతావరణం", "jobs": "ఉద్యోగాలు",
+    "farming": "వ్యవసాయం", "sports": "క్రీడలు", "education": "విద్య", "health": "ఆరోగ్యం",
+    "business": "వ్యాపారం", "other": "వార్తలు",
+}
 
 
 def assert_shaping_available() -> None:
@@ -180,12 +186,12 @@ def _background(theme: Theme) -> Image.Image:
             t = y / (HEIGHT - 1)
             c = tuple(round(a + (b - a) * t) for a, b in zip(theme.bg_top, theme.bg_bottom))
             px.line([(0, y), (WIDTH, y)], fill=c)
-    return img
-
-
-def _credit_text(post: RewrittenPost) -> str:
-    credit = post.source_credit.strip()
-    return credit if credit.startswith("మూలం") else f"మూలం: {credit}"
+    # Soft accent circles for depth (alpha-composited; no text sits on a bright area).
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.ellipse([WIDTH - 420, -260, WIDTH + 260, 420], fill=(*theme.accent, 46))
+    od.ellipse([-300, HEIGHT - 360, 380, HEIGHT + 260], fill=(*theme.accent, 30))
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
 
 def _draw_lines(draw, lines: list[str], font, x: int, y: int, line_h: int, fill) -> int:
@@ -195,28 +201,38 @@ def _draw_lines(draw, lines: list[str], font, x: int, y: int, line_h: int, fill)
     return y
 
 
-def _frame(theme: Theme, brand: str, credit: str, page: str | None = None):
-    """Draw background, brand, footer rule and credit. Returns (img, draw, top_y, bottom_y)."""
+def _frame(theme: Theme, brand: str, topic: str, index: int = 0, total: int = 1):
+    """Background, brand + topic chip on top, progress segments at the bottom.
+    Returns (img, draw, top_y, bottom_y) of the free content area. No source text is drawn
+    on images; the credit lives in the caption."""
     img = _background(theme)
     draw = ImageDraw.Draw(img)
     inner_w = WIDTH - 2 * MARGIN
-    # Brand, small, at the top.
-    bfont = _font(32, True)
-    bfont_h = int(32 * LINE_SPACING)
-    brand_lines = _truncate_to_fit(draw, brand, bfont, inner_w - 160, 1) if _width(draw, brand, bfont) > inner_w - 160 else [brand]
-    draw.text((MARGIN, MARGIN), brand_lines[0], font=bfont, fill=theme.muted)
-    if page:
-        pf = _font(30, False)
-        draw.text((WIDTH - MARGIN - _width(draw, page, pf), MARGIN), page, font=pf, fill=theme.muted)
-    top = MARGIN + bfont_h + 24
-    # Footer: thin rule and source credit.
-    cfont, cl, cline_h = fit_paragraphs(draw, [credit], inner_w, int(30 * LINE_SPACING) * 2, 30, 24, False)
-    foot_h = len(cl[0]) * cline_h
-    foot_y = HEIGHT - MARGIN - foot_h
-    rule_y = foot_y - 24
-    draw.line([(MARGIN, rule_y), (WIDTH - MARGIN - 1, rule_y)], fill=theme.muted, width=2)
-    _draw_lines(draw, cl[0], cfont, MARGIN, foot_y, cline_h, theme.muted)
-    return img, draw, top, rule_y - 40
+    bfont = _font(34, True)
+    bfont_h = int(34 * LINE_SPACING)
+    chip_font = _font(30, True)
+    label = TOPIC_LABEL.get(topic, TOPIC_LABEL["other"])
+    chip_w = int(_width(draw, label, chip_font)) + 48
+    chip_h = 58
+    brand_max = inner_w - chip_w - 32
+    brand_lines = _truncate_to_fit(draw, brand, bfont, brand_max, 1) if _width(draw, brand, bfont) > brand_max else [brand]
+    draw.text((MARGIN, MARGIN), brand_lines[0], font=bfont, fill=theme.text)
+    cx = WIDTH - MARGIN - chip_w
+    draw.rounded_rectangle([cx, MARGIN, cx + chip_w, MARGIN + chip_h], radius=chip_h // 2, fill=theme.accent)
+    draw.text((cx + 24, MARGIN - 6 + (chip_h - 30 * 1.55) / 2 + 6), label, font=chip_font, fill=theme.bg_bottom)
+    top = MARGIN + max(chip_h, bfont_h) + 56
+    # Bottom: progress segments (carousel position) or a short accent bar (single card).
+    bar_y = HEIGHT - MARGIN - 10  # inside the margin box
+    if total > 1:
+        gap, seg_h = 12, 8
+        seg_w = (inner_w - gap * (total - 1)) // total
+        for i in range(total):
+            x0 = MARGIN + i * (seg_w + gap)
+            draw.rounded_rectangle([x0, bar_y, x0 + seg_w, bar_y + seg_h], radius=4,
+                                   fill=theme.accent if i <= index else theme.muted)
+    else:
+        draw.rounded_rectangle([MARGIN, bar_y, MARGIN + 160, bar_y + 8], radius=4, fill=theme.accent)
+    return img, draw, top, bar_y - 56
 
 
 def _theme(post: RewrittenPost) -> Theme:
@@ -234,25 +250,28 @@ def _slug(post: RewrittenPost) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
-def _headline_slide(post, theme, brand, page=None) -> Image.Image:
-    img, draw, top, bottom = _frame(theme, brand, _credit_text(post), page)
-    font, wrapped, line_h = fit_paragraphs(
-        draw, [post.headline_te], WIDTH - 2 * MARGIN, bottom - top, 84, 44, True
-    )
+BAR_W, BAR_GAP = 10, 40  # accent bar beside the headline
+
+
+def _headline_slide(post, theme, brand, index=0, total=1) -> Image.Image:
+    img, draw, top, bottom = _frame(theme, brand, post.topic, index, total)
+    box_w = WIDTH - 2 * MARGIN - BAR_W - BAR_GAP
+    font, wrapped, line_h = fit_paragraphs(draw, [post.headline_te], box_w, bottom - top, 88, 44, True)
     block_h = len(wrapped[0]) * line_h
     y = top + max(0, (bottom - top - block_h) // 2)
-    _draw_lines(draw, wrapped[0], font, MARGIN, y, line_h, theme.text)
+    draw.rounded_rectangle([MARGIN, y + 8, MARGIN + BAR_W, y + block_h - 8], radius=BAR_W // 2, fill=theme.accent)
+    _draw_lines(draw, wrapped[0], font, MARGIN + BAR_W + BAR_GAP, y, line_h, theme.text)
     return img
 
 
 def render_card(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> list[Path]:
-    """One 1080x1350 JPEG with brand, headline and source credit."""
+    """One 1080x1350 JPEG with brand, topic chip and headline."""
     assert_shaping_available()
     img = _headline_slide(post, _theme(post), brand)
     return [_save(img, Path(out_dir) / f"card-{_slug(post)}.jpg")]
 
 
-MAX_CAROUSEL_POINTS = 6  # 2 per slide, at most 3 point slides: total 3-5 slides
+MAX_CAROUSEL_POINTS = 6  # 2 per slide, at most 3 point slides: total 2-4 slides
 
 
 def _chunk_points(points: list[str]) -> list[list[str]]:
@@ -260,37 +279,36 @@ def _chunk_points(points: list[str]) -> list[list[str]]:
     return [points[i:i + 2] for i in range(0, len(points), 2)]
 
 
+BADGE_D, BADGE_GAP = 84, 36
+
+
 def render_carousel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> list[Path]:
-    """Headline slide, one slide per 1-2 key points, then a source credit slide (3-5 total)."""
+    """Headline slide, then one slide per 1-2 key points (2-4 slides total)."""
     assert_shaping_available()
     points = [p for p in post.points_te if p.strip()]
     if not points:
         raise ValueError("carousel needs at least one key point")
     theme = _theme(post)
     chunks = _chunk_points(points)
-    total = len(chunks) + 2
+    total = len(chunks) + 1
     slug = _slug(post)
     out = Path(out_dir)
-    paths = [_save(_headline_slide(post, theme, brand, f"1/{total}"), out / f"carousel-{slug}-1.jpg")]
-    inner_w = WIDTH - 2 * MARGIN
+    paths = [_save(_headline_slide(post, theme, brand, 0, total), out / f"carousel-{slug}-1.jpg")]
+    text_w = WIDTH - 2 * MARGIN - BADGE_D - BADGE_GAP
+    num_font = _font(44, True)
     n = 0
-    for i, chunk in enumerate(chunks, start=2):
-        img, draw, top, bottom = _frame(theme, brand, _credit_text(post), f"{i}/{total}")
-        paras = []
-        for p in chunk:
-            n += 1
-            paras.append(f"{n}. {p}")
-        font, wrapped, line_h = fit_paragraphs(draw, paras, inner_w, bottom - top, 66, 40, True, gap=48)
-        block_h = sum(len(w) for w in wrapped) * line_h + 48 * (len(wrapped) - 1)
+    for i, chunk in enumerate(chunks, start=1):
+        img, draw, top, bottom = _frame(theme, brand, post.topic, i, total)
+        gap = 56
+        font, wrapped, line_h = fit_paragraphs(draw, list(chunk), text_w, bottom - top, 62, 38, True, gap=gap)
+        block_h = sum(len(w) for w in wrapped) * line_h + gap * (len(wrapped) - 1)
         y = top + max(0, (bottom - top - block_h) // 2)
         for w in wrapped:
-            y = _draw_lines(draw, w, font, MARGIN, y, line_h, theme.text) + 48
-        paths.append(_save(img, out / f"carousel-{slug}-{i}.jpg"))
-    # Source slide.
-    img, draw, top, bottom = _frame(theme, brand, _credit_text(post), f"{total}/{total}")
-    font, wrapped, line_h = fit_paragraphs(draw, [_credit_text(post)], inner_w, bottom - top, 64, 36, True)
-    block_h = len(wrapped[0]) * line_h
-    y = top + max(0, (bottom - top - block_h) // 2)
-    _draw_lines(draw, wrapped[0], font, MARGIN, y, line_h, theme.text)
-    paths.append(_save(img, out / f"carousel-{slug}-{total}.jpg"))
+            n += 1
+            draw.ellipse([MARGIN, y + 6, MARGIN + BADGE_D, y + 6 + BADGE_D], fill=theme.accent)
+            nt = str(n)
+            draw.text((MARGIN + BADGE_D / 2 - _width(draw, nt, num_font) / 2, y + 6 + BADGE_D / 2 - 34), nt,
+                      font=num_font, fill=theme.bg_bottom)
+            y = _draw_lines(draw, w, font, MARGIN + BADGE_D + BADGE_GAP, y, line_h, theme.text) + gap
+        paths.append(_save(img, out / f"carousel-{slug}-{i + 1}.jpg"))
     return paths
