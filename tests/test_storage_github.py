@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from tgnews import cli, storage_github
+from tgnews.config import ConfigError
 from tgnews.storage import StorageError, build_uploader
 from tgnews.storage_github import GithubImageStore, check_public_url
 
@@ -20,7 +21,9 @@ JPEG = b"\xff\xd8\xff\xe0fakejpegbytes"
 class Gh:
     """Fake GitHub Contents API recording requests."""
 
-    def __init__(self, files=None, put_status=201, list_status=200, delete_status=200, raise_exc=None):
+    def __init__(self, files=None, put_status=201, list_status=200, delete_status=200, raise_exc=None,
+                 root_status=404, raw_listing=None):
+        self.root_status, self.raw_listing = root_status, raw_listing
         self.requests = []
         self.files = dict(files or {})  # path -> sha
         self.put_status = put_status
@@ -32,7 +35,7 @@ class Gh:
         self.requests.append(request)
         if self.raise_exc:
             raise self.raise_exc
-        path = request.url.path.removeprefix("/repos/own/imgs/contents/")
+        path = request.url.path.removeprefix("/repos/own/imgs/contents").lstrip("/")
         if request.method == "PUT":
             if path in self.files and self.put_status == 201:
                 return httpx.Response(422, json={"message": "\"sha\" wasn't supplied."})
@@ -40,8 +43,12 @@ class Gh:
                 self.files[path] = "sha-" + path
             return httpx.Response(self.put_status, json={"message": f"msg {TOKEN}"})
         if request.method == "GET":
+            if path == "":
+                return httpx.Response(self.root_status, json=[])
             if self.list_status != 200:
                 return httpx.Response(self.list_status, json={"message": "Not Found"})
+            if self.raw_listing is not None:
+                return httpx.Response(200, **self.raw_listing)
             prefix = path.rstrip("/") + "/"
             out, seen = [], set()
             for p, sha in sorted(self.files.items()):
@@ -151,10 +158,10 @@ def test_sleeps_between_files_only(jpgs):
 def test_already_exists_is_error_never_overwrite(jpgs):
     existing = "posts/20261028/p-ab12cd-1.jpg"
     gh = Gh(files={existing: "oldsha"})
-    with pytest.raises(StorageError, match="already exists|not overwr"):
+    with pytest.raises(StorageError, match="not overwr"):
         store(gh).upload(jpgs, "p")
     assert gh.files[existing] == "oldsha"
-    assert len(gh.puts()) == 1  # stopped at the first failure
+    assert len(gh.puts()) == 2  # one retry with a fresh random part, then stop
     assert "sha" not in json.loads(gh.puts()[0].content)
 
 
@@ -233,7 +240,7 @@ def test_prune_deletes_only_old_posts_dirs_using_sha():
                 "posts/20261020/c-1.jpg",
                 "posts/notadate/x.jpg", "posts/2026100/x.jpg", "posts/20261340/x.jpg",
                 "posts/20260901.jpg", "README.md", "other/20260101/x.jpg")
-    n = store(gh).prune(14, NOW)
+    n = store(gh).prune(14, NOW).deleted
     assert n == 2
     assert sorted(gh.files) == sorted(["posts/20261014/b-1.jpg", "posts/20261020/c-1.jpg",
                                        "posts/notadate/x.jpg", "posts/2026100/x.jpg",
@@ -250,22 +257,36 @@ def test_prune_deletes_only_old_posts_dirs_using_sha():
 
 def test_prune_respects_per_run_bound_oldest_first():
     gh = seeded(*[f"posts/20260901/f{i}.jpg" for i in range(5)], "posts/20260902/g.jpg")
-    n = store(gh).prune(14, NOW, max_files=3)
+    n = store(gh).prune(14, NOW, max_files=3).deleted
     assert n == 3 and len(gh.deletes()) == 3
     assert "posts/20260902/g.jpg" in gh.files and len(gh.files) == 3
-    assert store(gh).prune(14, NOW, max_files=60) == 3 and gh.files == {}
+    assert store(gh).prune(14, NOW, max_files=60).deleted == 3 and gh.files == {}
 
 
 def test_prune_default_bound_is_60():
     gh = seeded(*[f"posts/20260901/f{i:03}.jpg" for i in range(70)])
-    assert store(gh).prune(14, NOW) == 60
+    assert store(gh).prune(14, NOW).deleted == 60
 
 
 def test_prune_tolerates_missing_posts_dir_and_deleted_file():
-    assert store(Gh(list_status=404)).prune(14, NOW) == 0
+    gh = seeded("README.md")  # repo exists, posts/ does not yet
+    gh.root_status = 200
+    assert store(gh).prune(14, NOW) == storage_github.PruneResult(0, 0)
     gh = seeded("posts/20260901/a.jpg")
     gh.delete_status = 404
-    assert store(gh).prune(14, NOW) == 0
+    assert store(gh).prune(14, NOW) == storage_github.PruneResult(0, 1)
+
+
+def test_prune_errors_map_without_token_and_listing_404_means_repo_problem_unless_root_ok():
+    with pytest.raises(StorageError, match="not found"):  # posts/ 404 and repo root 404 as well
+        store(Gh(list_status=404, root_status=404)).prune(14, NOW)
+    assert store(Gh(list_status=404, root_status=200)).prune(14, NOW).deleted == 0
+    for st in (401, 403):
+        with pytest.raises(StorageError):
+            store(Gh(list_status=404, root_status=st)).prune(14, NOW)
+    gh = Gh(list_status=404, root_status=200)
+    store(gh).prune(14, NOW)
+    assert len(gh.requests) == 2  # exactly one extra request
 
 
 def test_prune_errors_map_without_token():
@@ -276,9 +297,10 @@ def test_prune_errors_map_without_token():
 
 def test_prune_never_touches_future_or_zero_arg_misuse():
     gh = seeded("posts/20271001/a.jpg")
-    assert store(gh).prune(14, NOW) == 0
-    with pytest.raises(StorageError):
-        store(gh).prune(0, NOW)
+    assert store(gh).prune(14, NOW).deleted == 0
+    for days in (0, 1, 2):
+        with pytest.raises(ConfigError):
+            store(gh).prune(days, NOW)
 
 
 # ---------------------------------------------------------------- check_public_url
@@ -355,7 +377,7 @@ def test_unknown_provider_and_bad_keep_days():
     with pytest.raises(StorageError, match="STORAGE_PROVIDER"):
         build_uploader({**GH_ENV, "STORAGE_PROVIDER": "ftp"})
     for bad in ("0", "-1", "abc", "1.5"):
-        with pytest.raises(StorageError, match="IMAGES_KEEP_DAYS"):
+        with pytest.raises(ConfigError, match="IMAGES_KEEP_DAYS"):
             storage_github.keep_days({"IMAGES_KEEP_DAYS": bad})
     assert storage_github.keep_days({}) == 14
     assert storage_github.keep_days({"IMAGES_KEEP_DAYS": "30"}) == 30
@@ -385,7 +407,7 @@ def test_cli_prune_images(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_now", lambda: NOW)
     env = {**GH_ENV, "IMAGES_KEEP_DAYS": "7"}
     assert cli.main(["prune-images"], env) == 0
-    assert "deleted=1" in capsys.readouterr().out
+    assert "deleted=1 skipped=0" in capsys.readouterr().out
     assert list(gh.files) == ["posts/20261027/b.jpg"]
 
 
@@ -412,3 +434,135 @@ def test_cli_check_images(monkeypatch, capsys):
     monkeypatch.setattr(storage_github, "_default_http",
                         lambda: httpx.Client(transport=httpx.MockTransport(lambda q: httpx.Response(404))))
     assert cli.main(["check-images", "https://x.example/a.jpg"], {}) == 1
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_prune_bounded_by_attempts_when_delete_keeps_failing():
+    gh = seeded(*[f"posts/20260901/f{i:03}.jpg" for i in range(100)])
+    gh.delete_status = 422
+    sleeps = []
+    res = store(gh, sleep=sleeps.append).prune(14, NOW)
+    assert res == storage_github.PruneResult(0, 60)
+    assert len(gh.deletes()) == 60 and len(sleeps) == 60
+    assert len(gh.requests) <= 2 + 60
+
+
+def test_prune_day_boundaries():
+    gh = seeded("posts/20261013/old.jpg", "posts/20261014/edge.jpg")
+    assert store(gh).prune(14, NOW).deleted == 1  # day 15 goes, day 14 stays
+    assert list(gh.files) == ["posts/20261014/edge.jpg"]
+    for moment in (datetime(2026, 10, 28, 0, 0, 0, tzinfo=timezone.utc),
+                   datetime(2026, 10, 28, 23, 59, 59, tzinfo=timezone.utc)):
+        gh = seeded("posts/20261013/old.jpg", "posts/20261014/edge.jpg")
+        assert store(gh).prune(14, moment).deleted == 1
+        assert list(gh.files) == ["posts/20261014/edge.jpg"]
+
+
+@pytest.mark.parametrize("raw", [{"json": {"message": "oops"}}, {"content": b"<html>nope</html>"},
+                                 {"json": "text"}])
+def test_prune_rejects_non_list_listing(raw):
+    gh = Gh(raw_listing=raw)
+    with pytest.raises(StorageError, match="unexpected") as ei:
+        store(gh).prune(14, NOW)
+    assert "oops" not in str(ei.value) and "html" not in str(ei.value)
+    assert gh.deletes() == []
+
+
+def test_collision_retries_once_with_fresh_random_part(jpgs):
+    import itertools
+    gh = Gh(files={"posts/20261028/p-r0-1.jpg": "x"})
+    counter = itertools.count()
+    s = GithubImageStore(TOKEN, "own/imgs", http=gh.client(), sleep=lambda x: None, clock=lambda: NOW,
+                         unique=lambda: f"r{next(counter)}")
+    urls = s.upload(jpgs[:2], "p")
+    assert [u.rsplit("/", 1)[1] for u in urls] == ["p-r1-1.jpg", "p-r1-2.jpg"]
+    assert len(gh.puts()) == 3 and gh.files["posts/20261028/p-r0-1.jpg"] == "x"
+
+
+def test_persistent_rejection_message_is_generic(jpgs):
+    with pytest.raises(StorageError) as ei:
+        store(Gh(put_status=422)).upload(jpgs[:1], "p")
+    assert "HTTP 422" in str(ei.value) and "already exists" not in str(ei.value)
+    gh = Gh(put_status=422)
+    with pytest.raises(StorageError):
+        store(gh).upload(jpgs[:1], "p")
+    assert len(gh.puts()) == 2
+
+
+@pytest.mark.parametrize("repo", ["./x", "x/..", "../..", "a/.", "a/...", "./.."])
+def test_repo_segments_of_dots_rejected(repo):
+    with pytest.raises(StorageError):
+        GithubImageStore(TOKEN, repo)
+
+
+@pytest.mark.parametrize("base", ["https://c.example/x?a=1", "https://c.example/x#f", "https://c.example/a b"])
+def test_public_base_with_query_or_fragment_rejected(base):
+    with pytest.raises(StorageError):
+        GithubImageStore(TOKEN, "a/b", public_base=base)
+
+
+@pytest.mark.parametrize("branch", ["a//b", "-x", "x/", "foo.lock", "a..b", "/x", ".x", "x.", "a b", "a/.b"])
+def test_bad_branches_rejected(branch):
+    with pytest.raises(StorageError):
+        GithubImageStore(TOKEN, "a/b", branch=branch)
+    for ok in ("main", "release/1.0", "feature_x-1"):
+        GithubImageStore(TOKEN, "a/b", branch=ok)
+
+
+def test_non_jpeg_content_rejected_before_any_request(tmp_path, jpgs):
+    fake = tmp_path / "fake.jpg"
+    fake.write_bytes(b"GIF89a....")
+    gh = Gh()
+    with pytest.raises(StorageError, match="JPEG"):
+        store(gh).upload([jpgs[0], fake], "p")
+    assert gh.requests == []
+
+
+def test_storage_provider_single_validator():
+    from tgnews.storage import storage_provider
+    assert storage_provider({}) == "github" and storage_provider({"STORAGE_PROVIDER": " S3 "}) == "s3"
+    with pytest.raises(StorageError, match="STORAGE_PROVIDER"):
+        storage_provider({"STORAGE_PROVIDER": "r2"})
+
+
+def test_cli_images_commands_ignore_unrelated_bad_settings(monkeypatch, capsys):
+    gh = seeded()
+    gh.root_status = 200
+    monkeypatch.setattr(storage_github, "_default_http", gh.client)
+    env = {**GH_ENV, "MODE": "bogus", "DAILY_CAP": "x"}
+    assert cli.main(["prune-images"], env) == 0
+    monkeypatch.setattr(storage_github, "_default_http", lambda: httpx.Client(
+        transport=httpx.MockTransport(lambda q: httpx.Response(200, headers={"content-type": "image/jpeg"}))))
+    assert cli.main(["check-images", "https://x.example/a.jpg"], env) == 0
+
+
+def test_cli_prune_unknown_provider_is_an_error(capsys):
+    assert cli.main(["prune-images"], {"STORAGE_PROVIDER": "r2"}) == 1
+    err = capsys.readouterr().err
+    assert "STORAGE_PROVIDER" in err
+
+
+def test_cli_keep_days_below_minimum_rejected(capsys):
+    assert cli.main(["prune-images"], {**GH_ENV, "IMAGES_KEEP_DAYS": "2"}) == 1
+    err = capsys.readouterr().err
+    assert "IMAGES_KEEP_DAYS" in err and TOKEN not in err
+    with pytest.raises(ConfigError) as ei:
+        storage_github.keep_days({"IMAGES_KEEP_DAYS": "2"})
+    assert str(ei.value) == "IMAGES_KEEP_DAYS must be a whole number of at least 3"
+
+
+class _Boom(httpx.SyncByteStream):
+    def __iter__(self):
+        raise AssertionError("body must not be read")
+        yield b""
+
+
+def test_check_url_reads_headers_only_and_sends_no_credentials():
+    seen = []
+
+    def h(req):
+        seen.append(req)
+        return httpx.Response(200, headers={"content-type": "image/jpeg"}, stream=_Boom())
+    r = check_public_url("https://x.example/a.jpg", http=httpx.Client(transport=httpx.MockTransport(h)))
+    assert r.ok and "authorization" not in seen[0].headers

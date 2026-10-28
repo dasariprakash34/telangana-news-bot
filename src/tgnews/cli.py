@@ -23,7 +23,7 @@ from .render import ShapingUnavailable
 from .rewrite import DEFAULT_MODEL
 from .safety import BlocklistError
 from . import storage_github
-from .storage import build_uploader
+from .storage import build_uploader, storage_provider
 
 DEFAULT_SOURCES = "config/sources.yaml"
 _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
@@ -161,13 +161,12 @@ def _images_command(args, env: Mapping[str, str]) -> int:
         if not result.ok:
             print("error: not a publicly fetchable JPEG (expected HTTP 200 and image/jpeg)", file=sys.stderr)
         return 0 if result.ok else 1
-    provider = (env.get("STORAGE_PROVIDER") or "").strip().lower() or "github"
-    if provider != "github":
+    if storage_provider(env) != "github":
         print("prune-images: STORAGE_PROVIDER is not github; nothing to do")
         return 0
     store = storage_github.GithubImageStore.from_env(env)
-    deleted = store.prune(storage_github.keep_days(env), _now())
-    print(f"deleted={deleted}")
+    result = store.prune(storage_github.keep_days(env), _now())
+    print(f"deleted={result.deleted} skipped={result.skipped}")
     return 0
 
 
@@ -181,7 +180,6 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         return int(exc.code or 0)
     if args.command in ("prune-images", "check-images"):
         try:
-            Settings.from_env(env)
             return _images_command(args, env)
         except (KeyboardInterrupt, SystemExit):
             raise

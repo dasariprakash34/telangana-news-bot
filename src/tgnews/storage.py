@@ -106,14 +106,20 @@ def upload(paths: list[Path], prefix: str, *, client=None, config: StorageConfig
     return urls
 
 
+def storage_provider(env: Mapping[str, str]) -> str:
+    """The validated STORAGE_PROVIDER ("github" by default or "s3"); the one place that checks it."""
+    provider = (env.get("STORAGE_PROVIDER") or "").strip().lower() or "github"
+    if provider not in ("github", "s3"):
+        raise StorageError("STORAGE_PROVIDER must be 'github' or 's3'")
+    return provider
+
+
 def build_uploader(env: Mapping[str, str]):
     """Return ``upload(paths, prefix) -> urls`` for the provider in STORAGE_PROVIDER (default github)."""
-    provider = (env.get("STORAGE_PROVIDER") or "").strip().lower() or "github"
+    provider = storage_provider(env)
     if provider == "github":
         from .storage_github import GithubImageStore
 
         return GithubImageStore.from_env(env).upload
-    if provider == "s3":
-        cfg = StorageConfig.from_env(env)
-        return lambda paths, prefix: upload(paths, prefix, config=cfg)
-    raise StorageError("STORAGE_PROVIDER must be 'github' or 's3'")
+    cfg = StorageConfig.from_env(env)
+    return lambda paths, prefix: upload(paths, prefix, config=cfg)

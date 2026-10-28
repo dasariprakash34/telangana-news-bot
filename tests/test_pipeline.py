@@ -593,3 +593,30 @@ def test_compose_caption_respects_instagram_limit():
     assert exact == "అ" * 2200
     with pytest.raises(RewriteFailed):
         pipeline.compose_caption(RewrittenPost(caption_te="అ" * 2201, hashtags=tags, **base))
+
+
+def _approved_aged(engine, n, hours):
+    from sqlalchemy import update
+    db.save_story(engine, story(n))
+    pid = db.save_post(engine, story_id=f"s{n}", format="card", state=PostState.approved)
+    db.set_post_caption(engine, pid, "c")
+    with engine.begin() as c:
+        c.execute(db.drafts.insert().values(post_id=pid, caption="c", slides=["https://cdn.example.com/a.jpg"]))
+        c.execute(update(db.posts).where(db.posts.c.id == pid).values(created_at=NOW - timedelta(hours=hours)))
+    return pid
+
+
+def test_approved_post_older_than_48h_is_expired_not_published(engine, tmp_path):
+    pid = _approved_aged(engine, 1, 49)
+    ig = FakeIG()
+    result = publish_approved(settings(), make_deps(engine, tmp_path, [], ig=ig, tg=FakeTG()))
+    assert db.get_post(engine, pid).state is PostState.expired
+    assert (result.expired_stale, result.published, result.failed) == (1, 0, 0)
+    assert ig.calls == [] and ig.created == []
+
+
+def test_approved_post_47h_old_is_published(engine, tmp_path):
+    pid = _approved_aged(engine, 1, 47)
+    result = publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG(), tg=FakeTG()))
+    assert db.get_post(engine, pid).state is PostState.published
+    assert (result.expired_stale, result.published) == (0, 1)

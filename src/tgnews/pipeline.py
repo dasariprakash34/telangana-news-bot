@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 
 MAX_STORY_AGE = timedelta(hours=48)
 CAP_WINDOW = timedelta(hours=24)
+# An approved post older than this is never published (stale news; also lets the images repo prune
+# safely: IMAGES_KEEP_DAYS is at least 3 days).
+MAX_PUBLISH_AGE = timedelta(hours=48)
 NOT_COUNTED = (PostState.rejected, PostState.expired, PostState.failed)
 FORMATS = learn.FORMATS
 MAX_CAPTION_CHARS = 2200  # Instagram caption limit
@@ -92,6 +95,7 @@ class RunSummary:
 @dataclass
 class PublishSummary:
     expired: int = 0
+    expired_stale: int = 0
     decisions: int = 0
     reconciled: int = 0
     published: int = 0
@@ -396,6 +400,10 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
         return out
     out.reconciled = len(publish.reconcile_publishing(engine, deps.instagram, now))
     for post in approved:
+        if post.created_at is not None and now - _aware(post.created_at) > MAX_PUBLISH_AGE:
+            if db.transition_post_state(engine, post.id, PostState.approved, PostState.expired, now):
+                out.expired_stale += 1
+            continue
         try:
             draft = db.latest_draft(engine, post.id)
             if not draft or not draft["slides"] or not post.caption:

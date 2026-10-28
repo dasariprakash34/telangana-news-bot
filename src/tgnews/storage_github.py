@@ -22,6 +22,7 @@ from pathlib import Path
 
 import httpx
 
+from .config import ConfigError
 from .storage import StorageError
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -32,6 +33,7 @@ API_VERSION = "2022-11-28"
 POSTS_DIR = "posts"
 MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_KEEP_DAYS = 14
+MIN_KEEP_DAYS = 3  # publishing is capped at 48 h (pipeline.MAX_PUBLISH_AGE); keep a safety margin
 DEFAULT_PRUNE_LIMIT = 60
 _JPEG_SUFFIXES = {".jpg", ".jpeg"}
 _REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -45,6 +47,22 @@ def _default_http() -> httpx.Client:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _valid_branch(branch: str) -> bool:
+    return bool(branch and _BRANCH_RE.fullmatch(branch) and ".." not in branch and "//" not in branch
+                and not branch.startswith(("-", "/", ".")) and not branch.endswith(("/", ".", ".lock"))
+                and "/." not in branch and ".lock/" not in branch)
+
+
+def _json_list(resp: httpx.Response, what: str) -> list:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        raise StorageError(f"unexpected GitHub response (not a directory listing) while {what}")
+    return data
 
 
 def _safe_prefix(prefix: str) -> str:
@@ -71,6 +89,12 @@ def _status_error(status: int, what: str) -> StorageError:
 
 
 @dataclass(frozen=True)
+class PruneResult:
+    deleted: int
+    skipped: int  # DELETE attempts GitHub refused with 404/409/422 (file gone or changed)
+
+
+@dataclass(frozen=True)
 class CheckResult:
     status: int
     content_type: str
@@ -84,14 +108,17 @@ class GithubImageStore:
                  pause: float = 1.0) -> None:
         if not (token or "").strip():
             raise StorageError("missing GitHub token")
-        if not _REPO_RE.fullmatch(repo or "") or ".." in repo:
+        if (not _REPO_RE.fullmatch(repo or "") or ".." in repo
+                or any(set(seg) <= {"."} for seg in repo.split("/"))):
             raise StorageError("images repo must look like 'owner/name'")
-        if not _BRANCH_RE.fullmatch(branch or "") or ".." in branch:
+        if not _valid_branch(branch):
             raise StorageError("images branch name is invalid")
         if public_base is not None:
             public_base = public_base.strip()
             if not public_base.startswith("https://"):
                 raise StorageError("IMAGES_PUBLIC_BASE must start with https:// (Instagram requires HTTPS)")
+            if "?" in public_base or "#" in public_base or any(c.isspace() for c in public_base):
+                raise StorageError("IMAGES_PUBLIC_BASE must not contain '?', '#' or whitespace")
         self._token = token.strip()
         self.repo = repo
         self.branch = branch
@@ -123,7 +150,7 @@ class GithubImageStore:
 
     # -- HTTP -----------------------------------------------------------------------------
     def _request(self, method: str, path: str, what: str, *, json=None, params=None) -> httpx.Response:
-        url = f"{API}/repos/{self.repo}/contents/{urllib.parse.quote(path)}"
+        url = f"{API}/repos/{self.repo}/contents/{urllib.parse.quote(path)}".rstrip("/")
         headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": API_VERSION}
         http = self._http or _default_http()
@@ -145,19 +172,28 @@ class GithubImageStore:
                 raise StorageError(f"only JPEG files are supported, got {path.name}")
             if path.stat().st_size > MAX_BYTES:
                 raise StorageError(f"file too large for upload (max 5 MB): {path.name}")
+            with path.open("rb") as fh:
+                if fh.read(3) != b"\xff\xd8\xff":
+                    raise StorageError(f"not a JPEG (bad file signature): {path.name}")
             items.append(path)
-        stem = f"{POSTS_DIR}/{self._clock():%Y%m%d}/{safe}-{self._unique()}"
+        day = f"{POSTS_DIR}/{self._clock():%Y%m%d}"
+        stem = f"{day}/{safe}-{self._unique()}"
         urls: list[str] = []
         for n, path in enumerate(items, start=1):
             if n > 1:
                 self._sleep(self._pause)
-            target = f"{stem}-{n}.jpg"
-            body = {"message": f"add {target}", "branch": self.branch,
-                    "content": base64.b64encode(path.read_bytes()).decode("ascii")}
-            resp = self._request("PUT", target, f"uploading {target}", json=body)
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+            for attempt in (1, 2):
+                target = f"{stem}-{n}.jpg"
+                resp = self._request("PUT", target, f"uploading {target}",
+                                     json={"message": f"add {target}", "branch": self.branch, "content": data})
+                if resp.status_code in (409, 422) and attempt == 1:
+                    stem = f"{day}/{safe}-{self._unique()}"  # fresh random part, retry once
+                    continue
+                break
             if resp.status_code in (409, 422):
-                raise StorageError(f"upload refused for {target} (HTTP {resp.status_code}): the file already "
-                                   "exists or the branch changed; not overwriting")
+                raise StorageError(f"GitHub rejected the file (HTTP {resp.status_code}) for {target}; "
+                                   "not overwriting")
             if resp.status_code != 201:
                 if resp.status_code == 200:
                     raise StorageError(f"unexpected GitHub response (HTTP 200) for {target}: "
@@ -167,19 +203,25 @@ class GithubImageStore:
         return urls
 
     # -- housekeeping ---------------------------------------------------------------------
-    def prune(self, older_than_days: int, now: datetime, *, max_files: int = DEFAULT_PRUNE_LIMIT) -> int:
-        """Delete files in posts/YYYYMMDD directories older than ``older_than_days``. Returns the count
-        deleted (at most ``max_files``; the rest is handled by later runs). Touches nothing outside posts/."""
-        if older_than_days < 1:
-            raise StorageError("IMAGES_KEEP_DAYS must be at least 1")
-        cutoff = (now - timedelta(days=older_than_days)).date()
+    def prune(self, older_than_days: int, now: datetime, *, max_files: int = DEFAULT_PRUNE_LIMIT) -> PruneResult:
+        """Delete files in posts/YYYYMMDD directories older than ``older_than_days`` days (by UTC date).
+        At most ``max_files`` DELETE attempts per run, successful or not; the rest waits for later runs.
+        Touches nothing outside posts/."""
+        if older_than_days < MIN_KEEP_DAYS:
+            raise ConfigError(f"IMAGES_KEEP_DAYS must be at least {MIN_KEEP_DAYS}")
+        cutoff = (now.astimezone(timezone.utc) - timedelta(days=older_than_days)).date()
         listing = self._request("GET", POSTS_DIR, "listing old images", params={"ref": self.branch})
         if listing.status_code == 404:
-            return 0
+            # A missing posts/ directory is normal before the first upload; a missing repo, branch or
+            # an unusable token is not. One extra request to the repo root tells them apart.
+            root = self._request("GET", "", "checking the images repo", params={"ref": self.branch})
+            if root.status_code == 200:
+                return PruneResult(0, 0)
+            raise _status_error(root.status_code, "checking the images repo")
         if listing.status_code != 200:
             raise _status_error(listing.status_code, "listing old images")
         old: list[str] = []
-        for entry in listing.json():
+        for entry in _json_list(listing, "listing old images"):
             name = entry.get("name", "") if isinstance(entry, dict) else ""
             if not (isinstance(entry, dict) and entry.get("type") == "dir" and _DIR_RE.fullmatch(name)):
                 continue
@@ -189,37 +231,39 @@ class GithubImageStore:
                 continue
             if day < cutoff:
                 old.append(name)
-        deleted = 0
+        deleted = skipped = attempts = 0
         for name in sorted(old):
             sub = self._request("GET", f"{POSTS_DIR}/{name}", "listing old images", params={"ref": self.branch})
             if sub.status_code == 404:
                 continue
             if sub.status_code != 200:
                 raise _status_error(sub.status_code, "listing old images")
-            for f in sub.json():
+            for f in _json_list(sub, "listing old images"):
                 if not (isinstance(f, dict) and f.get("type") == "file" and f.get("sha")
                         and str(f.get("path", "")).startswith(f"{POSTS_DIR}/{name}/")):
                     continue
-                if deleted >= max_files:
-                    return deleted
-                if deleted:
-                    self._sleep(self._pause)
+                if attempts >= max_files:
+                    return PruneResult(deleted, skipped)
+                attempts += 1
                 resp = self._request("DELETE", f["path"], f"deleting {f['path']}",
                                      json={"message": f"prune {f['path']}", "sha": f["sha"],
                                            "branch": self.branch})
                 if resp.status_code == 200:
                     deleted += 1
-                elif resp.status_code not in (404, 409, 422):
+                elif resp.status_code in (404, 409, 422):
+                    skipped += 1
+                else:
                     raise _status_error(resp.status_code, f"deleting {f['path']}")
-        return deleted
+                self._sleep(self._pause)
+        return PruneResult(deleted, skipped)
 
 
 def keep_days(env: Mapping[str, str]) -> int:
     raw = (env.get("IMAGES_KEEP_DAYS") or "").strip()
     if not raw:
         return DEFAULT_KEEP_DAYS
-    if not raw.isdigit() or int(raw) < 1:
-        raise StorageError("IMAGES_KEEP_DAYS must be a positive whole number")
+    if not raw.isdigit() or int(raw) < MIN_KEEP_DAYS:
+        raise ConfigError(f"IMAGES_KEEP_DAYS must be a whole number of at least {MIN_KEEP_DAYS}")
     return int(raw)
 
 
@@ -228,8 +272,9 @@ def check_public_url(url: str, *, http: httpx.Client | None = None) -> CheckResu
     if not url.startswith("https://"):
         raise StorageError("URL must start with https://")
     try:
-        resp = (http or _default_http()).get(url, follow_redirects=True)
+        # Headers only (the body is never read) and no credentials: a fresh client, not the API one.
+        with (http or _default_http()).stream("GET", url, follow_redirects=True) as resp:
+            status, ctype = resp.status_code, resp.headers.get("content-type", "")
     except httpx.HTTPError as exc:
         raise StorageError(f"could not fetch the URL ({type(exc).__name__})") from None
-    ctype = resp.headers.get("content-type", "")
-    return CheckResult(resp.status_code, ctype, resp.status_code == 200 and ctype.lower().startswith("image/jpeg"))
+    return CheckResult(status, ctype, status == 200 and ctype.lower().startswith("image/jpeg"))
