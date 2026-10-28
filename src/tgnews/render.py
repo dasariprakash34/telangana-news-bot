@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, features
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, features
 
 from tgnews.rewrite import RewrittenPost
 
@@ -178,22 +178,6 @@ def fit_paragraphs(
     return font, result, line_h
 
 
-def _background(theme: Theme) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), theme.bg_top)
-    if theme.bg_top != theme.bg_bottom:
-        px = ImageDraw.Draw(img)
-        for y in range(HEIGHT):
-            t = y / (HEIGHT - 1)
-            c = tuple(round(a + (b - a) * t) for a, b in zip(theme.bg_top, theme.bg_bottom))
-            px.line([(0, y), (WIDTH, y)], fill=c)
-    # Soft accent circles for depth (alpha-composited; no text sits on a bright area).
-    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    od.ellipse([WIDTH - 420, -260, WIDTH + 260, 420], fill=(*theme.accent, 46))
-    od.ellipse([-300, HEIGHT - 360, 380, HEIGHT + 260], fill=(*theme.accent, 30))
-    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-
-
 def _draw_lines(draw, lines: list[str], font, x: int, y: int, line_h: int, fill) -> int:
     for line in lines:
         draw.text((x, y), line, font=font, fill=fill)
@@ -201,15 +185,83 @@ def _draw_lines(draw, lines: list[str], font, x: int, y: int, line_h: int, fill)
     return y
 
 
-def _frame(theme: Theme, brand: str, topic: str, index: int = 0, total: int = 1):
-    """Background, brand + topic chip on top, progress segments at the bottom.
-    Returns (img, draw, top_y, bottom_y) of the free content area. No source text is drawn
-    on images; the credit lives in the caption."""
-    img = _background(theme)
+STYLES = ("glass", "contour")
+PANEL = (MARGIN, 330, WIDTH - MARGIN, 1100)  # x0, y0, x1, y1: text panel shared by all slides
+PANEL_PAD = 54
+TEXT_TOP_OFFSET = 70  # text starts this far below the panel top (room for the accent line)
+
+
+def _grain(img: Image.Image, sigma: float) -> Image.Image:
+    """Film grain: gaussian noise centred on mid-grey added to every channel."""
+    noise = Image.effect_noise(img.size, sigma).convert("RGB")
+    return ImageChops.add(img.convert("RGB"), noise, scale=1.0, offset=-128)
+
+
+def _gradient(top, bottom) -> Image.Image:
+    img = Image.new("RGB", (WIDTH, HEIGHT), top)
+    px = ImageDraw.Draw(img)
+    for y in range(HEIGHT):
+        t = y / (HEIGHT - 1)
+        px.line([(0, y), (WIDTH, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(top, bottom)))
+    return img
+
+
+def _lift(c, f):
+    return tuple(min(255, int(v * f)) for v in c)
+
+
+def _contours(draw, cx, cy, rings, step, alpha_major, alpha_minor, color, wobble):
+    for k in range(1, rings + 1):
+        pts = []
+        for t in range(0, 361, 3):
+            a = math.radians(t)
+            r = k * step * (1 + 0.16 * math.sin(3 * a + k * 0.13 + wobble) + 0.09 * math.sin(5 * a - k * 0.21)
+                            + 0.05 * math.sin(9 * a + k * 0.4))
+            pts.append((cx + r * 1.25 * math.cos(a), cy + r * 1.05 * math.sin(a)))
+        major = k % 5 == 0
+        draw.line(pts + [pts[0]], fill=(*color, alpha_major if major else alpha_minor), width=3 if major else 2)
+
+
+@lru_cache(maxsize=32)
+def _decor(style: str, theme: Theme) -> Image.Image:
+    """Textured background (no text, nothing that depends on the post). Cached per style+theme."""
+    if style == "glass":
+        base = _gradient(_lift(theme.bg_top, 1.5), _lift(theme.bg_bottom, 0.8)).convert("RGBA")
+        glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse([560, -220, 1300, 520], fill=(*theme.accent, 140))
+        gd.ellipse([-320, 900, 520, 1700], fill=(*_lift(theme.accent, 0.6), 110))
+        gd.ellipse([300, 1000, 900, 1500], fill=(*_lift(theme.accent, 0.8), 60))
+        base = Image.alpha_composite(base, glow.filter(ImageFilter.GaussianBlur(110)))
+        return _grain(base, 14)
+    base = _gradient(_lift(theme.bg_bottom, 0.55), _lift(theme.bg_bottom, 0.4)).convert("RGBA")
+    lines = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(lines)
+    _contours(ld, 640, 470, 34, 34, 140, 70, theme.accent, 0.0)
+    _contours(ld, 180, 1180, 17, 40, 90, 45, theme.accent, 1.0)
+    return _grain(Image.alpha_composite(base, lines), 10)
+
+
+def _panel_and_frame(style, theme, brand, topic, index, total) -> Image.Image:
+    img = _decor(style, theme).copy().convert("RGBA")
+    x0, y0, x1, y1 = PANEL
+    if style == "glass":
+        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).rounded_rectangle([x0, y0 + 30, x1, y1 + 30], radius=48, fill=(0, 0, 0, 150))
+        img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(36)))
+        pan = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        pd = ImageDraw.Draw(pan)
+        pd.rounded_rectangle([x0, y0, x1, y1], radius=48, fill=(255, 255, 255, 34), outline=(255, 255, 255, 110), width=2)
+        pd.rounded_rectangle([x0 + 2, y0 + 2, x1 - 2, y0 + 90], radius=46, fill=(255, 255, 255, 20))
+        pd.rounded_rectangle([x0 + PANEL_PAD, y0 + 46, x0 + PANEL_PAD + 120, y0 + 54], radius=4, fill=(*theme.accent, 255))
+        img = Image.alpha_composite(img, pan)
+    img = img.convert("RGB")
     draw = ImageDraw.Draw(img)
+    if style == "contour":
+        draw.rectangle([x0 + 16, y0 + 16, x1 + 16, y1 + 16], fill=(0, 0, 0))
+        draw.rectangle([x0, y0, x1, y1], fill=theme.accent)
     inner_w = WIDTH - 2 * MARGIN
     bfont = _font(34, True)
-    bfont_h = int(34 * LINE_SPACING)
     chip_font = _font(30, True)
     label = TOPIC_LABEL.get(topic, TOPIC_LABEL["other"])
     chip_w = int(_width(draw, label, chip_font)) + 48
@@ -219,24 +271,42 @@ def _frame(theme: Theme, brand: str, topic: str, index: int = 0, total: int = 1)
     draw.text((MARGIN, MARGIN), brand_lines[0], font=bfont, fill=theme.text)
     cx = WIDTH - MARGIN - chip_w
     draw.rounded_rectangle([cx, MARGIN, cx + chip_w - 1, MARGIN + chip_h], radius=chip_h // 2, fill=theme.accent)
-    draw.text((cx + 24, MARGIN - 6 + (chip_h - 30 * 1.55) / 2 + 6), label, font=chip_font, fill=theme.bg_bottom)
-    top = MARGIN + max(chip_h, bfont_h) + 56
-    # Bottom: progress segments (carousel position) or a short accent bar (single card).
-    bar_y = HEIGHT - MARGIN - 20  # inside the margin box
+    draw.text((cx + 24, MARGIN + 4), label, font=chip_font, fill=theme.bg_bottom)
+    bar_y = HEIGHT - MARGIN - 20
     if total > 1:
         gap, seg_h = 12, 8
         seg_w = (inner_w - gap * (total - 1)) // total
         for i in range(total):
-            x0 = MARGIN + i * (seg_w + gap)
-            draw.rounded_rectangle([x0, bar_y, x0 + seg_w - 1, bar_y + seg_h], radius=4,
+            sx = MARGIN + i * (seg_w + gap)
+            draw.rounded_rectangle([sx, bar_y, sx + seg_w - 1, bar_y + seg_h], radius=4,
                                    fill=theme.accent if i <= index else theme.muted)
     else:
         draw.rounded_rectangle([MARGIN, bar_y, MARGIN + 160, bar_y + 8], radius=4, fill=theme.accent)
-    return img, draw, top, bar_y - 56
+    return img
+
+
+@lru_cache(maxsize=64)
+def _base_cached(style, theme, brand, topic, index, total) -> Image.Image:
+    return _panel_and_frame(style, theme, brand, topic, index, total)
+
+
+def base_slide(post: RewrittenPost, brand: str, index: int = 0, total: int = 1) -> Image.Image:
+    """The textured slide with panel, brand, chip and progress, but no headline/points text."""
+    return _base_cached(style_for(post), _theme(post), brand, post.topic, index, total).copy()
 
 
 def _theme(post: RewrittenPost) -> Theme:
     return PALETTE.get(post.topic, DEFAULT_THEME)
+
+
+def _slug(post: RewrittenPost) -> str:
+    raw = "\x1f".join([post.headline_te, *post.points_te, post.source_credit])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+
+def style_for(post: RewrittenPost) -> str:
+    """Visual style, chosen deterministically (about half and half) from the post's content."""
+    return STYLES[int(_slug(post), 16) % len(STYLES)]
 
 
 def _save(img: Image.Image, path: Path) -> Path:
@@ -245,30 +315,30 @@ def _save(img: Image.Image, path: Path) -> Path:
     return path
 
 
-def _slug(post: RewrittenPost) -> str:
-    raw = "\x1f".join([post.headline_te, *post.points_te, post.source_credit])
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+def _text_color(style: str, theme: Theme):
+    return theme.text if style == "glass" else (12, 20, 30)
 
 
-BAR_W, BAR_GAP = 10, 40  # accent bar beside the headline
+def _text_box():
+    x0, y0, x1, y1 = PANEL
+    return x0 + PANEL_PAD, y0 + TEXT_TOP_OFFSET, x1 - x0 - 2 * PANEL_PAD, (y1 - PANEL_PAD) - (y0 + TEXT_TOP_OFFSET)
 
 
-def _headline_slide(post, theme, brand, index=0, total=1) -> Image.Image:
-    img, draw, top, bottom = _frame(theme, brand, post.topic, index, total)
-    box_w = WIDTH - 2 * MARGIN - BAR_W - BAR_GAP
-    font, wrapped, line_h = fit_paragraphs(draw, [post.headline_te], box_w, bottom - top, 88, 44, True)
+def _headline_slide(post, brand, index=0, total=1) -> Image.Image:
+    style, theme = style_for(post), _theme(post)
+    img = base_slide(post, brand, index, total)
+    draw = ImageDraw.Draw(img)
+    tx, ty, tw, th = _text_box()
+    font, wrapped, line_h = fit_paragraphs(draw, [post.headline_te], tw, th, 84, 44, True)
     block_h = len(wrapped[0]) * line_h
-    y = top + max(0, (bottom - top - block_h) // 2)
-    draw.rounded_rectangle([MARGIN, y + 8, MARGIN + BAR_W, y + block_h - 8], radius=BAR_W // 2, fill=theme.accent)
-    _draw_lines(draw, wrapped[0], font, MARGIN + BAR_W + BAR_GAP, y, line_h, theme.text)
+    _draw_lines(draw, wrapped[0], font, tx, ty + max(0, (th - block_h) // 2), line_h, _text_color(style, theme))
     return img
 
 
 def render_card(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> list[Path]:
     """One 1080x1350 JPEG with brand, topic chip and headline."""
     assert_shaping_available()
-    img = _headline_slide(post, _theme(post), brand)
-    return [_save(img, Path(out_dir) / f"card-{_slug(post)}.jpg")]
+    return [_save(_headline_slide(post, brand), Path(out_dir) / f"card-{_slug(post)}.jpg")]
 
 
 MAX_CAROUSEL_POINTS = 6  # 2 per slide, at most 3 point slides: total 2-4 slides
@@ -279,7 +349,7 @@ def _chunk_points(points: list[str]) -> list[list[str]]:
     return [points[i:i + 2] for i in range(0, len(points), 2)]
 
 
-BADGE_D, BADGE_GAP = 84, 36
+BADGE_D, BADGE_GAP = 72, 30
 
 
 def render_carousel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> list[Path]:
@@ -288,27 +358,30 @@ def render_carousel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) ->
     points = [p for p in post.points_te if p.strip()]
     if not points:
         raise ValueError("carousel needs at least one key point")
-    theme = _theme(post)
+    style, theme = style_for(post), _theme(post)
     chunks = _chunk_points(points)
     total = len(chunks) + 1
     slug = _slug(post)
     out = Path(out_dir)
-    paths = [_save(_headline_slide(post, theme, brand, 0, total), out / f"carousel-{slug}-1.jpg")]
-    text_w = WIDTH - 2 * MARGIN - BADGE_D - BADGE_GAP
-    num_font = _font(44, True)
+    paths = [_save(_headline_slide(post, brand, 0, total), out / f"carousel-{slug}-1.jpg")]
+    tx, ty, tw, th = _text_box()
+    text_w = tw - BADGE_D - BADGE_GAP
+    num_font = _font(40, True)
+    badge_fill, badge_text = (theme.accent, theme.bg_bottom) if style == "glass" else ((12, 20, 30), theme.accent)
     n = 0
     for i, chunk in enumerate(chunks, start=1):
-        img, draw, top, bottom = _frame(theme, brand, post.topic, i, total)
-        gap = 56
-        font, wrapped, line_h = fit_paragraphs(draw, list(chunk), text_w, bottom - top, 62, 38, True, gap=gap)
+        img = base_slide(post, brand, i, total)
+        draw = ImageDraw.Draw(img)
+        gap = 48
+        font, wrapped, line_h = fit_paragraphs(draw, list(chunk), text_w, th, 56, 34, True, gap=gap)
         block_h = sum(len(w) for w in wrapped) * line_h + gap * (len(wrapped) - 1)
-        y = top + max(0, (bottom - top - block_h) // 2)
+        y = ty + max(0, (th - block_h) // 2)
         for w in wrapped:
             n += 1
-            draw.ellipse([MARGIN, y + 6, MARGIN + BADGE_D, y + 6 + BADGE_D], fill=theme.accent)
+            draw.ellipse([tx, y + 6, tx + BADGE_D, y + 6 + BADGE_D], fill=badge_fill)
             nt = str(n)
-            draw.text((MARGIN + BADGE_D / 2 - _width(draw, nt, num_font) / 2, y + 6 + BADGE_D / 2 - 34), nt,
-                      font=num_font, fill=theme.bg_bottom)
-            y = _draw_lines(draw, w, font, MARGIN + BADGE_D + BADGE_GAP, y, line_h, theme.text) + gap
+            draw.text((tx + BADGE_D / 2 - _width(draw, nt, num_font) / 2, y + 6 + BADGE_D / 2 - 30), nt,
+                      font=num_font, fill=badge_text)
+            y = _draw_lines(draw, w, font, tx + BADGE_D + BADGE_GAP, y, line_h, _text_color(style, theme)) + gap
         paths.append(_save(img, out / f"carousel-{slug}-{i + 1}.jpg"))
     return paths
