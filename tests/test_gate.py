@@ -111,6 +111,30 @@ def test_reject_sets_state_rejected(engine, fake, draft):
     assert state(engine, draft) == PostState.rejected
 
 
+def test_approve_and_reject_send_a_confirmation_message(engine, fake, draft):
+    fake.updates = [cb(1, draft, "a")]
+    gate.poll_decisions(engine, fake.client(), NOW)
+    texts = [p["text"] for p in fake.of("sendMessage")]
+    assert any(f"Approved post #{draft}" in t for t in texts)
+    fake.calls.clear()
+    fake.updates = [cb(2, draft, "r")]  # draft is no longer pending: the tap is explained, not silent
+    gate.poll_decisions(engine, fake.client(), NOW)
+    assert any("no longer pending" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_reject_confirmation_message(engine, fake, draft):
+    fake.updates = [cb(1, draft, "r")]
+    gate.poll_decisions(engine, fake.client(), NOW)
+    assert any(f"Rejected post #{draft}" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_notify_never_raises(engine):
+    class Boom(FakeTelegram):
+        def handler(self, request):
+            return httpx.Response(500, json={"ok": False, "description": "down"})
+    gate.notify(Boom().client(), "hello")  # must not raise
+
+
 def test_edited_caption_is_saved_and_revalidated(engine, fake, draft):
     fake.updates = [cb(1, draft, "e")]
     assert gate.poll_decisions(engine, fake.client(), NOW) == []

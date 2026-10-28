@@ -415,11 +415,15 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
             publish.publish_post(post.id, draft["slides"], post.caption, deps.instagram, engine,
                                  sleep=deps.sleep)
             out.published += 1
+            if deps.telegram is not None:
+                gate.notify(deps.telegram, f"Published post #{post.id} on Instagram.")
         except _PROPAGATE:
             raise
         except Exception as exc:
             out.failed += 1
             out.errors.append(f"post {post.id}: {sanitize_error(exc)}")
+            if deps.telegram is not None:
+                gate.notify(deps.telegram, f"Publishing post #{post.id} failed: {sanitize_error(exc)}")
             if is_auth_failure(exc):
                 raise _abort_auth(exc) from None
     return out

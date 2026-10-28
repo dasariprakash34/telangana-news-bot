@@ -158,6 +158,16 @@ def _safe(client: TelegramClient, method: str, **payload: Any) -> None:
         logging.getLogger(__name__).warning("telegram notify failed: %s", exc)
 
 
+def notify(client: TelegramClient, text: str, reply_to: int | None = None) -> None:
+    """Send a plain confirmation message to the review chat. Never raises: a failed notice must
+    not stop a run. (Button pop-ups cannot be used for this: polling happens minutes after the
+    tap, when Telegram has already expired the callback query.)"""
+    payload: dict[str, Any] = {"chat_id": client.chat_id, "text": text}
+    if reply_to is not None:
+        payload["reply_to_message_id"] = reply_to
+    _safe(client, "sendMessage", **payload)
+
+
 def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, Any]) -> Decision | None:
     message = cq.get("message") or {}
     if not _from_our_chat(client, message.get("chat")):
@@ -172,6 +182,8 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
     if post is None or post.state != PostState.draft:
         _safe(client, "answerCallbackQuery", callback_query_id=cq["id"],
               text="This draft is no longer pending.")
+        notify(client, f"Post #{post_id} is no longer pending (already handled or expired), "
+                       "so your tap did nothing.", message.get("message_id"))
         return None
     if action == "edit":
         prompt = client.call(
@@ -184,9 +196,14 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
     if not db.transition_post_state(engine, post_id, PostState.draft, target):
         _safe(client, "answerCallbackQuery", callback_query_id=cq["id"],
               text="This draft is no longer pending.")
+        notify(client, f"Post #{post_id} is no longer pending, so your tap did nothing.",
+               message.get("message_id"))
         return None
     _safe(client, "answerCallbackQuery", callback_query_id=cq["id"],
           text="Approved" if action == "approve" else "Rejected")
+    notify(client, (f"Approved post #{post_id}. It will be published at the next run (within about 30 minutes)."
+                    if action == "approve" else f"Rejected post #{post_id}. It will not be published."),
+           message.get("message_id"))
     return Decision(post_id=post_id, action=action)
 
 
