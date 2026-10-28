@@ -1,0 +1,141 @@
+# DRAFT blocklist for the safety filter. The page owner must review and edit it.
+#
+# !! All Telugu terms below MUST be verified by a fluent Telugu reader before
+# !! relying on them. They are a modest, unverified starting set.
+#
+# Matching: case-insensitive over title + summary, NFC-normalized.
+# English keywords match from the start of a word ("arrest" matches "arrested").
+# Telugu keywords match as plain substrings.
+#
+# verdict: block  -> never posted, in any mode.
+# verdict: hold   -> flagged. In "review" mode it is allowed (a human reviews
+#                    every draft); in "auto" mode it is kept as a draft.
+# If a story matches both kinds of group, block wins.
+
+groups:
+  communal_incitement:
+    verdict: block
+    description: Content likely to incite communal violence or hatred.
+    keywords:
+      - communal clash
+      - communal violence
+      - communal tension
+      - communal riot
+      - riot
+      - hate speech
+      - lynching
+      - religious clash
+      - మతకలహాలు
+      - అల్లర్లు
+
+  sexual_violence_and_minors:
+    verdict: block
+    description: Identifying victims of sexual violence, or minors involved in crimes.
+    keywords:
+      - rape
+      - gang-rape
+      - sexual assault
+      - sexual harassment of minor
+      - molested
+      - victim's name
+      - minor accused
+      - juvenile accused
+      - juvenile offender
+      - అత్యాచారం
+
+  death_rumours:
+    verdict: block
+    description: Unverified rumours presented as fact about deaths of public figures.
+    keywords:
+      - rumours of death
+      - rumors of death
+      - death rumour
+      - death rumor
+      - reportedly dead
+      - unconfirmed reports of death
+      - fake death news
+
+  politics_elections:
+    verdict: hold
+    description: Politics and election claims.
+    keywords:
+      - election
+      - poll results
+      - vote counting
+      - bypoll
+      - manifesto
+      - horse-trading
+      - defection
+      - allegation
+      - ఎన్నికలు
+
+  crime_arrests:
+    verdict: hold
+    description: Crime and arrest reports.
+    keywords:
+      - arrest
+      - murder
+      - killed
+      - stabbed
+      - robbery
+      - kidnap
+      - fraud
+      - scam
+      - smuggling
+      - custody
+      - హత్య
+      - అరెస్ట్
+
+  accidents_deaths:
+    verdict: hold
+    description: Accident and death reports.
+    keywords:
+      - accident
+      - died
+      - dies
+      - dead
+      - death
+      - drowned
+      - collision
+      - stampede
+      - suicide
+      - ప్రమాదం
+      - మరణం
+
+  court_cases:
+    verdict: hold
+    description: Court cases and legal proceedings.
+    keywords:
+      - high court
+      - supreme court
+      - court
+      - verdict
+      - bail
+      - petition
+      - కోర్టు
+
+  religion:
+    verdict: hold
+    description: Religion-related stories.
+    keywords:
+      - temple
+      - mosque
+      - church
+      - religious
+      - idol
+      - procession
+      - ఆలయం
+      - మసీదు
+
+  health_claims:
+    verdict: hold
+    description: Health claims and cures.
+    keywords:
+      - cure
+      - miracle
+      - outbreak
+      - epidemic
+      - vaccine
+      - cancer
+      - herbal remedy
+      - side effects
