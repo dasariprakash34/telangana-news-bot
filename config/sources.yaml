@@ -1,7 +1,7 @@
 # RSS sources for tgnews. Add only feeds whose terms allow republishing summaries.
-# All three feeds were opened in a browser on 2026-10-28 and returned current stories.
-# Republishing terms of The Hindu and Telangana Today are NOT yet checked by the owner. Review mode only
-# until both are confirmed.
+# All feeds were opened in a browser on 2026-10-28 and returned current stories.
+# Republishing terms of these outlets are NOT yet checked by the owner. Review mode only
+# until they are confirmed.
 feeds:
   - name: The Hindu
     url: https://www.thehindu.com/news/national/telangana/feeder/default.rss
@@ -9,3 +9,9 @@ feeds:
     url: https://www.thehindu.com/news/cities/Hyderabad/feeder/default.rss
   - name: Telangana Today
     url: https://telanganatoday.com/feed
+  - name: Siasat
+    url: https://www.siasat.com/news/telangana/feed/
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/feed
+  - name: V6 Velugu
+    url: https://www.v6velugu.com/feed
