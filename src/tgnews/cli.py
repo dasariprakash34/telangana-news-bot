@@ -6,13 +6,14 @@ import dataclasses
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from sqlalchemy import create_engine
 
-from . import analyze, db, learn, pipeline, publish, report
+from . import analyze, db, gate, learn, pipeline, publish, report
 from .config import ConfigError, Settings
 from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
@@ -103,9 +104,60 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("prune-images", help="delete old images from the GitHub images repo")
     sub.add_parser("check-images", help="GET one public image URL and report status and content type"
                    ).add_argument("url")
+    listen = sub.add_parser("listen", help="long-poll Telegram and act on taps within seconds")
+    listen.add_argument("--minutes", type=float, default=340.0, help="stop after this many minutes")
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
     return p
+
+
+def _publish_pass(settings: Settings, deps: Deps) -> None:
+    summary = pipeline.publish_approved(settings, deps)
+    print(_fmt(summary), flush=True)
+    for e in summary.errors:
+        print(f"error: {e}", file=sys.stderr, flush=True)
+
+
+def _listen(args, settings: Settings, deps: Deps, *, clock: Callable[[], float] = time.monotonic,
+            sleep: Callable[[float], None] = time.sleep) -> int:
+    """Hold a Telegram long poll open so a tap is handled within seconds instead of at the next
+    scheduled run. The database is touched only when Telegram reports a new update, so an idle
+    listener does not keep a serverless database awake. A getUpdates 409 means another poller
+    (a posting run) took the connection; it already handled the updates, so just poll again."""
+    if deps.telegram is None:
+        raise pipeline.PipelineError("listen needs Telegram")
+    end = clock() + args.minutes * 60
+    _publish_pass(settings, deps)
+
+    def offset() -> int:
+        raw = db.get_kv(deps.engine, gate.KV_OFFSET)
+        return int(raw) if raw else 0
+
+    current = offset()
+    failures = 0
+    while clock() < end:
+        try:
+            updates = deps.telegram.call("getUpdates", offset=current, timeout=20,
+                                         allowed_updates=["callback_query", "message"]) or []
+            failures = 0
+        except gate.TelegramError as exc:
+            failures += 1
+            print(f"listen: poll failed: {exc}", file=sys.stderr, flush=True)
+            sleep(min(5 * failures, 60))
+            continue
+        if not updates:
+            continue
+        try:
+            _publish_pass(settings, deps)
+        except pipeline.PipelineError:
+            raise
+        except Exception as exc:
+            print(f"listen: pass failed: {_describe(exc, os.environ)}", file=sys.stderr, flush=True)
+        new = offset()
+        if new == current:  # nothing advanced: avoid a hot loop on a poison update
+            sleep(30)
+        current = new
+    return 0
 
 
 def _dispatch(args, settings: Settings, deps: Deps) -> int:
@@ -131,6 +183,8 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         print(_fmt(summary))
         for e in summary.errors:
             print(f"error: {e}", file=sys.stderr)
+    elif cmd == "listen":
+        return _listen(args, settings, deps)
     elif cmd == "analyze":
         try:
             recorded = analyze.run_analysis(deps.engine, deps.instagram, now)
@@ -195,7 +249,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 pass
             return 1
     purpose = {"run": "run", "dry-run": "dry-run", "publish-approved": "publish",
-               "analyze": "analyze", "report": "report", "refresh-token": "refresh-token"}[args.command]
+               "listen": "publish", "analyze": "analyze", "report": "report", "refresh-token": "refresh-token"}[args.command]
     deps = None
     try:
         settings = Settings.from_env(env)

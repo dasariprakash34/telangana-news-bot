@@ -12,7 +12,8 @@ from tgnews import cli, config
 ROOT = Path(__file__).resolve().parent.parent
 WF_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WF_DIR.glob("*.yml"))
-EXPECTED = {"post.yml", "publish-approved.yml", "analyze.yml", "report.yml", "refresh-token.yml"}
+LISTENER = "telegram-listener.yml"
+EXPECTED = {"post.yml", "publish-approved.yml", "analyze.yml", "report.yml", "refresh-token.yml", LISTENER}
 SETUP_PREFIXES = ("sudo apt-get ", "python -m pip install ")
 
 
@@ -68,6 +69,10 @@ class TestEachWorkflow:
     def test_dispatch_and_concurrency_and_permissions(self, path):
         doc = load(path)
         assert "workflow_dispatch" in triggers(doc)
+        if path.name == LISTENER:  # long-running; own group so it never blocks posting runs
+            assert doc["concurrency"] == {"group": "tgnews-listener", "cancel-in-progress": False}
+            assert doc["permissions"] == {"contents": "read", "actions": "write"}
+            return
         assert doc["concurrency"] == {"group": "tgnews", "cancel-in-progress": False}
         assert doc["permissions"] == {"contents": "read"}
 
@@ -79,11 +84,15 @@ class TestEachWorkflow:
 
     def test_env_values_are_expressions_only(self, path):
         for name, value in env_values(load(path)):
+            if path.name == LISTENER and (name, value) == ("GH_TOKEN", "${{ github.token }}"):
+                continue  # the built-in token, used only to start the next listener run
             assert re.fullmatch(r"\$\{\{ (secrets|vars)\.[A-Z_]+( \|\| '[a-z]+')? \}\}", str(value)), \
                 f"{path.name}: {name} must be a secrets./vars. expression, not a literal"
 
     def test_secret_names_match_their_variable(self, path):
         for name, value in env_values(load(path)):
+            if name == "GH_TOKEN":
+                continue
             assert f".{name}" in str(value), f"{path.name}: {name} mapped to {value}"
 
     def test_no_credential_looking_text(self, path):
@@ -103,6 +112,8 @@ class TestEachWorkflow:
             if line.startswith("tgnews "):
                 saw_tgnews = True
                 assert_valid_tgnews_line(path.name, line, valid)
+            elif path.name == LISTENER and line.startswith("gh workflow run telegram-listener.yml "):
+                continue
             else:
                 assert line.startswith(SETUP_PREFIXES), f"{path.name}: unexpected run line {line!r}"
         assert saw_tgnews
@@ -130,6 +141,18 @@ def test_post_cron_matches_default_time_slots():
         got.append(f"{int(hour):02d}:{int(minute):02d}")
     assert sorted(got) == sorted(config.DEFAULT_TIME_SLOTS)
     assert "config.py" in (WF_DIR / "post.yml").read_text()  # the sync comment
+
+
+def test_listener_runs_listen_then_restarts_itself():
+    doc = load(WF_DIR / LISTENER)
+    lines = [l for l in run_lines(doc) if l.startswith(("tgnews ", "gh "))]
+    assert lines[0] == "tgnews listen"
+    assert lines[1].startswith("gh workflow run telegram-listener.yml ")
+    job = doc["jobs"]["listen"]
+    assert job["timeout-minutes"] > 340 / 1 * 1  # longer than `tgnews listen --minutes` default (340)
+    assert job["timeout-minutes"] < 360  # GitHub hard limit is 6 hours
+    restart = next(st for st in job["steps"] if st.get("name") == "Start the next listener")
+    assert restart["if"] == "${{ !cancelled() }}"
 
 
 def test_post_runs_then_publishes_approved():
@@ -172,6 +195,8 @@ def test_workflow_env_names_are_documented():
     readme = (ROOT / "README.md").read_text()
     for path in WORKFLOWS:
         for name, _ in env_values(load(path)):
+            if name == "GH_TOKEN":
+                continue  # the runner's built-in token, not a project setting
             assert name in listed, f"{name} used in {path.name} but not in .env.example"
             assert name in readme, f"{name} used in {path.name} but not in README.md"
 

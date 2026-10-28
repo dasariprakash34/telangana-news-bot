@@ -1,0 +1,59 @@
+name: tgnews telegram listener
+
+on:
+  schedule:
+    # Backup only: the listener restarts itself at the end of each run. If that chain ever breaks,
+    # this brings it back within 6 hours. A queued run simply waits for the active one to finish.
+    - cron: "50 */6 * * *"
+  workflow_dispatch:
+
+# Own group: this job runs for hours and must not block the posting runs (which use group "tgnews").
+# Publishing is safe alongside them: a post is claimed atomically before it is sent to Instagram.
+concurrency:
+  group: tgnews-listener
+  cancel-in-progress: false
+
+# Least privilege: read the repository, and start the next listener run of this workflow.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Telugu text needs complex-script shaping; the app refuses to start without raqm.
+      - name: Install system libraries for Telugu text shaping
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b
+      # DATABASE_URL must be a HOSTED Postgres URL (runners have no persistent disk); never sqlite here.
+      - name: Install tgnews
+        run: python -m pip install -e ".[postgres]"
+      - name: Listen for Telegram taps and publish approved posts
+        run: tgnews listen
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_API_VERSION: ${{ secrets.IG_API_VERSION }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ vars.MODE || 'review' }}
+          DAILY_CAP: ${{ vars.DAILY_CAP }}
+          BRAND_NAME: ${{ vars.BRAND_NAME }}
+          TIME_SLOTS: ${{ vars.TIME_SLOTS }}
+          ACTIVE_SLOT_COUNT: ${{ vars.ACTIVE_SLOT_COUNT }}
+          PER_RUN_CAP: ${{ vars.PER_RUN_CAP }}
+          REQUIRE_SOURCE_CREDIT: ${{ vars.REQUIRE_SOURCE_CREDIT }}
+      # Start the next listener so there is no gap. Runs even if the listener failed.
+      - name: Start the next listener
+        if: ${{ !cancelled() }}
+        run: gh workflow run telegram-listener.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}

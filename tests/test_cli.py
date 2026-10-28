@@ -197,3 +197,33 @@ def test_run_alerts_on_infrastructure_failures_even_without_abort(engine, monkey
     monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: content_only)
     tg2 = TG()
     assert run(["run"], builder(engine, telegram=tg2)) == 0 and tg2.calls == []
+
+
+def test_listen_acts_only_when_telegram_reports_an_update(engine, monkeypatch):
+    from types import SimpleNamespace
+    from tgnews import db, gate
+
+    passes = []
+
+    class Summary:
+        errors = []
+
+    def fake_publish(settings, deps):
+        passes.append(1)
+        db.set_kv(engine, gate.KV_OFFSET, "11")  # a pass consumes the update
+        return pipeline.PublishSummary()
+
+    monkeypatch.setattr(cli.pipeline, "publish_approved", fake_publish)
+    replies = [[], [{"update_id": 10}], []]
+
+    class Tg:
+        def call(self, method, **kw):
+            assert method == "getUpdates" and kw["timeout"] == 20
+            return replies.pop(0) if replies else []
+
+    ticks = iter(range(0, 1000))
+    args = SimpleNamespace(minutes=1)
+    deps = SimpleNamespace(engine=engine, telegram=Tg())
+    code = cli._listen(args, cli.Settings(), deps, clock=lambda: next(ticks) * 10.0, sleep=lambda s: None)
+    assert code == 0
+    assert len(passes) == 2  # one startup pass + one for the single update; idle polls cost no pass
