@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import (JSON, Column, DateTime, Float, ForeignKey, Integer, MetaData,
-                        String, Table, Text, insert, select, update)
+                        String, Table, Text, inspect, insert, select, text, update)
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +36,17 @@ posts = Table(
     Column("state", String(16), nullable=False),
     Column("posted_at", DateTime(timezone=True)),
     Column("metrics", JSON),
+    Column("container_id", String(128)),
+    Column("caption", Text),
+    Column("created_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True)),  # last state change
+)
+
+kv = Table(
+    "kv", metadata,
+    Column("key", String(128), primary_key=True),
+    Column("value", Text, nullable=False),
+    Column("updated_at", DateTime(timezone=True)),
 )
 
 drafts = Table(
@@ -69,8 +80,24 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+# Columns added after the first release; init() adds them to pre-existing tables.
+_POSTS_ADDED_COLUMNS = {
+    "container_id": "VARCHAR(128)", "caption": "TEXT",
+    "created_at": "TIMESTAMP WITH TIME ZONE", "updated_at": "TIMESTAMP WITH TIME ZONE",
+}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def init(engine: Engine) -> None:
     metadata.create_all(engine)
+    existing = {c["name"] for c in inspect(engine).get_columns("posts")}
+    with engine.begin() as conn:
+        for name, ddl in _POSTS_ADDED_COLUMNS.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE posts ADD COLUMN {name} {ddl}"))
 
 
 def save_story(engine: Engine, story: Story) -> None:
@@ -102,7 +129,8 @@ def save_post(engine: Engine, *, story_id: str, format: str, topic: str | None =
     with engine.begin() as conn:
         res = conn.execute(insert(posts).values(
             story_id=story_id, format=format, topic=topic, time_slot=time_slot,
-            headline_style=headline_style, state=state.value))
+            headline_style=headline_style, state=state.value,
+            created_at=_now(), updated_at=_now()))
         return int(res.inserted_primary_key[0])
 
 
@@ -110,7 +138,9 @@ def _row_to_post(row: Any) -> Post:
     return Post(id=row.id, story_id=row.story_id, format=row.format, topic=row.topic,
                 time_slot=row.time_slot, headline_style=row.headline_style,
                 state=PostState(row.state), media_id=row.media_id,
-                posted_at=_utc(row.posted_at), metrics=row.metrics)
+                posted_at=_utc(row.posted_at), metrics=row.metrics,
+                container_id=row.container_id, caption=row.caption,
+                created_at=_utc(row.created_at), updated_at=_utc(row.updated_at))
 
 
 def get_post(engine: Engine, post_id: int) -> Post | None:
@@ -121,13 +151,60 @@ def get_post(engine: Engine, post_id: int) -> Post | None:
 
 def update_post_state(engine: Engine, post_id: int, state: PostState, *,
                       media_id: str | None = None, posted_at: datetime | None = None) -> None:
-    values: dict[str, Any] = {"state": state.value}
+    values: dict[str, Any] = {"state": state.value, "updated_at": _now()}
     if media_id is not None:
         values["media_id"] = media_id
     if posted_at is not None:
         values["posted_at"] = _utc(posted_at)
     with engine.begin() as conn:
         conn.execute(update(posts).where(posts.c.id == post_id).values(**values))
+
+
+def mark_publishing(engine: Engine, post_id: int) -> bool:
+    """Atomically move a draft/approved post to publishing. False if someone else already did
+    (or the post is in any other state): exactly one caller may go on to call media_publish."""
+    with engine.begin() as conn:
+        res = conn.execute(update(posts).where(
+            posts.c.id == post_id,
+            posts.c.state.in_([PostState.draft.value, PostState.approved.value]),
+        ).values(state=PostState.publishing.value, updated_at=_now()))
+        return res.rowcount == 1
+
+
+def set_post_caption(engine: Engine, post_id: int, caption: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(update(posts).where(posts.c.id == post_id).values(caption=caption))
+
+
+def set_post_container(engine: Engine, post_id: int, container_id: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(update(posts).where(posts.c.id == post_id).values(container_id=container_id))
+
+
+def set_post_media(engine: Engine, post_id: int, media_id: str, posted_at: datetime) -> None:
+    with engine.begin() as conn:
+        conn.execute(update(posts).where(posts.c.id == post_id).values(
+            media_id=media_id, posted_at=_utc(posted_at)))
+
+
+def list_posts_by_state(engine: Engine, state: PostState) -> list[Post]:
+    with engine.connect() as conn:
+        rows = conn.execute(select(posts).where(posts.c.state == state.value)
+                            .order_by(posts.c.id)).all()
+    return [_row_to_post(r) for r in rows]
+
+
+def get_kv(engine: Engine, key: str) -> str | None:
+    with engine.connect() as conn:
+        row = conn.execute(select(kv.c.value).where(kv.c.key == key)).first()
+    return row[0] if row else None
+
+
+def set_kv(engine: Engine, key: str, value: str) -> None:
+    with engine.begin() as conn:
+        res = conn.execute(update(kv).where(kv.c.key == key).values(value=value, updated_at=_now()))
+        if res.rowcount == 0:
+            conn.execute(insert(kv).values(key=key, value=value, updated_at=_now()))
 
 
 def posts_due_for_analysis(engine: Engine, now: datetime) -> list[Post]:

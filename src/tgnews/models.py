@@ -39,3 +39,7 @@ class Post:
     media_id: str | None = None
     posted_at: datetime | None = None
     metrics: dict[str, Any] | None = None
+    container_id: str | None = None
+    caption: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
