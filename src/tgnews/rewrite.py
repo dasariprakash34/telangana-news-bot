@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 
+import anthropic
+
 from tgnews.models import Story
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 STYLES = ("question", "number", "statement")
@@ -14,6 +19,7 @@ TOPICS = (
     "sports", "education", "health", "business", "other",
 )
 
+MAX_TOKENS = 4000
 MAX_HEADLINE = 90
 MAX_CAPTION = 2000
 MAX_HASHTAGS = 10
@@ -116,13 +122,18 @@ def validate(post: RewrittenPost) -> list[str]:
     return problems
 
 
+def _neutralise(text: str) -> str:
+    """Escape angle brackets so untrusted text cannot close or open prompt tags."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _build_user_message(story: Story, style_hint: str, problems: list[str] | None) -> str:
     msg = (
         f"Headline style: {_STYLE_GUIDE[style_hint]}\n"
         f"Suggested topic: {story.topic_hint or 'other'}\n"
         f"Source credit (use verbatim in caption_te and as source_credit): {story.source_name}\n\n"
-        f"<story_title>\n{story.title}\n</story_title>\n"
-        f"<story_summary>\n{story.summary}\n</story_summary>\n"
+        f"<story_title>\n{_neutralise(story.title)}\n</story_title>\n"
+        f"<story_summary>\n{_neutralise(story.summary)}\n</story_summary>\n"
     )
     if problems:
         msg += (
@@ -184,21 +195,43 @@ def rewrite(
         raise RewriteFailed("story has no summary to rewrite from")
 
     problems: list[str] | None = None
+    last_exc: BaseException | None = None
     for _attempt in range(2):
-        response = client.messages.create(
-            model=model,
-            max_tokens=1500,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": _build_user_message(story, style_hint, problems)}
-            ],
-        )
         try:
-            post = _parse(response.content[0].text, story, style_hint)
-        except ValueError as exc:
-            problems = [str(exc)]
+            response = client.messages.create(
+                model=model,
+                max_tokens=MAX_TOKENS,
+                system=SYSTEM_PROMPT,
+                messages=[
+                    {"role": "user", "content": _build_user_message(story, style_hint, problems)}
+                ],
+            )
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+            raise
+        except Exception as exc:
+            log.warning("rewrite attempt failed: client error: %r", exc)
+            problems = [f"client error: {exc!r}"]
+            last_exc = exc
+            continue
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            log.warning("rewrite attempt failed: reply truncated at max_tokens")
+            problems = ["reply truncated at max_tokens"]
+            last_exc = ValueError(problems[0])
+            continue
+        try:
+            text = response.content[0].text
+            if not isinstance(text, str):
+                raise TypeError("first content block has no text")
+            post = _parse(text, story, style_hint)
+        except (IndexError, AttributeError, TypeError, ValueError) as exc:
+            log.warning("rewrite attempt failed: %s", exc)
+            problems = [f"malformed reply: {exc}"]
+            last_exc = exc
             continue
         problems = validate(post)
         if not problems:
             return post
-    raise RewriteFailed("rewrite failed validation: " + "; ".join(problems or []))
+        last_exc = ValueError("; ".join(problems))
+    raise RewriteFailed(
+        "rewrite failed after 2 attempts: " + "; ".join(problems or [])
+    ) from last_exc
