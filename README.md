@@ -6,6 +6,14 @@ Design: `docs/superpowers/specs/2026-10-28-telangana-instagram-bot-design.md` (i
 
 **Verification note.** Statements marked *(unverified)* were not checked against an official source while writing this guide. Meta and GitHub change their dashboards, limits and prices often. Where a menu name or a number matters, check the current official docs rather than trusting this file.
 
+## Before you start
+
+- **Anthropic API key** (`ANTHROPIC_API_KEY`): create one in the Anthropic console; check Anthropic's current docs for the exact path.
+- **Meta development mode**: while your Meta app is in development mode, the Instagram account must be added to the app with a tester or other role. Check Meta's current docs for the exact steps.
+- **`IG_USER_ID`**: the Instagram user ID of the account the token belongs to. Meta's Business Login docs say the token exchange response includes a `user_id` field (verified). I could not verify a `GET /me?fields=user_id,username` call, so check Meta's current docs for how to fetch it with your token. Use the same ID the API returns for that token's account.
+- **Throwaway test account** (step 9): it needs its own Business/Creator switch, Facebook Page link, token and user ID, and must also be added to the Meta app.
+- **GitHub**: push this repo to GitHub with the workflows on the **default branch**. Scheduled runs only run from the default branch; for manual runs (`workflow_dispatch`) the workflow file must also exist on the default branch for the Run button to appear *(the default-branch rule is from general GitHub knowledge, not re-verified here)*. On a new or forked repository Actions may need to be enabled first (check GitHub's current docs).
+
 ## Setup, in order
 
 Do these in order. Do not skip the throwaway-account test (step 9).
@@ -54,7 +62,7 @@ Values: `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`
 
 ### 5. Create a hosted Postgres database
 
-Runners have no persistent disk, so `DATABASE_URL` must be a hosted Postgres URL, for example `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. The workflows install the driver with `pip install -e .[postgres]` (extra `postgres = ["psycopg[binary]"]`). Do not use sqlite in Actions; it would be empty on every run and could double-post.
+Runners have no persistent disk, so `DATABASE_URL` must be a hosted Postgres URL, for example `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. If your provider gives you `postgres://...` or `postgresql://...`, the program rewrites it to `postgresql+psycopg://...` itself; other schemes (sqlite) are left alone. The workflows install the driver with `pip install -e .[postgres]` (extra `postgres = ["psycopg[binary]"]`). Do not use sqlite in Actions; it would be empty on every run and could double-post.
 
 ### 6. Add sources: `config/sources.yaml`
 
@@ -95,7 +103,7 @@ pip install -e ".[dev]"
 tgnews dry-run --out ./out
 ```
 
-This renders images and captions into `./out` with no Instagram, Telegram or storage calls. Open the images and **check the Telugu carefully**: letters must be properly joined (the program refuses to start if Pillow lacks raqm; on Linux install `libraqm0 libfribidi0 libharfbuzz0b`). Have a Telugu reader check the text.
+This renders images and captions into `./out` with no Instagram, Telegram or storage calls. Open the images and **check the Telugu carefully**: letters must be properly joined (`run` and `dry-run` check this first and stop with a `ShapingUnavailable` error if Pillow lacks raqm; on Linux install `libraqm0 libfribidi0 libharfbuzz0b`). Have a Telugu reader check the text.
 
 Then point all secrets at a **throwaway Instagram test account** (and a test bucket/database), keep `MODE=review`, and trigger **tgnews post** once with `workflow_dispatch`. Approve one draft in Telegram, trigger **tgnews publish approved**, and confirm the post appears.
 
@@ -110,7 +118,7 @@ All five support manual runs (`workflow_dispatch`) and share one `concurrency` g
 | File | When (UTC / IST) | What it does |
 |---|---|---|
 | `post.yml` | 02:00, 07:00, 13:00, 15:30 / 07:30, 12:30, 18:30, 21:00 | `tgnews run` (fetch, dedupe, safety, rewrite, render, upload, then draft to Telegram in review mode or publish in auto mode), then `tgnews publish-approved`. These match the default `TIME_SLOTS`. Each run takes the nearest slot; only the day's active slots post. |
-| `publish-approved.yml` | every 30 min, 01:00 to 17:30 / 06:30 to 23:00 | `tgnews publish-approved`: expires old drafts (6 hours), reads Telegram taps, publishes approved posts. Approvals therefore publish with up to about 30 minutes of delay, longer if GitHub delays the run. |
+| `publish-approved.yml` | every 30 min, 01:00 to 17:30 / 06:30 to 23:00 | `tgnews publish-approved`: reads Telegram taps, then expires untouched drafts (older than 6 hours), then publishes approved posts. Approval behaviour: a tap is read when the next publish run polls Telegram, **before** old drafts are expired, so a tap on a still-pending draft is honoured even if the draft is older than 6 hours. Expiry only removes drafts nobody acted on. Latency: inside the window an approval publishes within about 30 minutes (longer if GitHub delays the run); an evening approval (after 17:30 UTC / 23:00 IST) publishes at the next run, 01:00 UTC (06:30 IST) at the latest. `post.yml` also runs `publish-approved` after each posting run. |
 | `analyze.yml` | daily 20:20 / 01:50 | `tgnews analyze`: pulls insights for posts at least 48 hours old and updates the learning table. |
 | `report.yml` | Mondays 03:10 / 08:40 | `tgnews report`: writes the weekly report and sends it to Telegram. |
 | `refresh-token.yml` | Sundays 04:40 / 10:10 | `tgnews refresh-token`: refreshes the Instagram token and stores it. |
@@ -120,7 +128,7 @@ Cost and scheduling caveats:
 - Actions minutes included depend on your plan and on whether the repository is public or private. Check GitHub's current pricing and limits before enabling the schedules. The publish-approved cadence alone is 34 runs a day, each installing dependencies. This count is arithmetic; the cost is *(unverified)*.
 - GitHub's docs say scheduled workflows may be delayed during periods of high load (verified); the typical size of delays (a third-party source says 5 to 30 minutes at the top of the hour) is *(unverified against GitHub's own docs)*. Posts and approvals can therefore be late.
 - GitHub's docs say that in a **public** repository scheduled workflows are disabled automatically when there has been no repository activity for 60 days (verified). Whether private repositories are affected was not verified. If posts stop, check the Actions tab and re-enable the workflows.
-- Behaviour of GitHub concurrency when several runs queue in one group (it keeps one pending run and may cancel older pending ones) is *(unverified)*. Treat a skipped scheduled run as possible.
+- All workflows share one concurrency group with `cancel-in-progress: false`, so a running job is never cancelled. Only one run per group can be pending, though, so a pending run (for example a `post.yml` slot) can be displaced by a newer one. That means a **missed slot**; this is an accepted risk of the single group. *(The one-pending-run rule is unverified here; check GitHub's concurrency docs.)*
 
 ## How learning works
 
@@ -133,9 +141,9 @@ The report (sent to Telegram on Mondays) is worded by Claude from numbers comput
 ## Known limitations
 
 - Only RSS sources are implemented. No news API is wired in.
-- A story is marked seen as soon as it is chosen and cleared by safety. If rewriting, rendering or publishing then fails, that story is not retried.
+- A story is claimed (saved as seen) after it is chosen and passes the BLOCK check, and before rewriting. If rewriting, rendering, upload or publishing then fails, the story is not retried.
 - Runs must not overlap. The shared concurrency group guards this in Actions; do not also run the CLI elsewhere against the same database and account.
-- The BLOCK/HOLD safety check is re-run on each run over the story text; a story blocked once is not remembered as blocked, it is simply checked again.
+- A BLOCKed story is skipped before it is saved, so it is not remembered and is simply checked again on every run while it stays in the feed. HOLD stories are saved and become drafts (review mode) or held drafts (auto mode).
 - A failed publish is never retried blindly (to avoid duplicates); it is reconciled against Instagram's recent media on the next publish run.
 - The Telugu blocklist and the Telugu output are unreviewed by a native speaker until you do that review.
 - No video, Stories or comment replies.

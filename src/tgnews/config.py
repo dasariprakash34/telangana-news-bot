@@ -48,6 +48,16 @@ def _parse_active_count(raw: str | None) -> int:
     return n
 
 
+def normalize_database_url(url: str) -> str:
+    """Hosting dashboards hand out `postgres://` or `postgresql://`; SQLAlchemy would then pick the
+    psycopg2 driver, which is not installed. Map both to psycopg 3. Other schemes are untouched."""
+    url = url.strip()
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
     mode: str = "review"
@@ -68,7 +78,7 @@ class Settings:
         return cls(
             mode=mode,
             daily_cap=_parse_cap(env.get("DAILY_CAP")),
-            database_url=env.get("DATABASE_URL", "sqlite:///tgnews.db"),
+            database_url=normalize_database_url(env.get("DATABASE_URL") or "sqlite:///tgnews.db"),
             brand_name=(env.get("BRAND_NAME") or "").strip() or "Telangana News",
             time_slots=_parse_slots(env.get("TIME_SLOTS")),
             active_slot_count=_parse_active_count(env.get("ACTIVE_SLOT_COUNT")),

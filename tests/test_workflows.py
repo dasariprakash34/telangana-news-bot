@@ -39,6 +39,20 @@ def run_lines(doc: dict):
                         yield line.strip()
 
 
+def assert_valid_tgnews_line(where: str, line: str, valid: set[str]) -> None:
+    tokens = line.split()
+    assert tokens[0] == "tgnews" and len(tokens) >= 2 and tokens[1] in valid, \
+        f"{where}: unknown subcommand in {line!r}"
+    rest = tokens[2:]
+    if tokens[1] == "run":
+        allowed = [[], ["--ignore-slots"]]
+    elif tokens[1] == "dry-run":
+        allowed = [["--out", rest[1]]] if len(rest) == 2 and rest[0] == "--out" else []
+    else:
+        allowed = [[]]
+    assert rest in allowed, f"{where}: unexpected arguments in {line!r}"
+
+
 def env_values(doc: dict):
     for job in doc["jobs"].values():
         for step in job["steps"]:
@@ -88,7 +102,7 @@ class TestEachWorkflow:
         for line in run_lines(load(path)):
             if line.startswith("tgnews "):
                 saw_tgnews = True
-                assert line.split()[1] in valid, f"{path.name}: unknown subcommand in {line!r}"
+                assert_valid_tgnews_line(path.name, line, valid)
             else:
                 assert line.startswith(SETUP_PREFIXES), f"{path.name}: unexpected run line {line!r}"
         assert saw_tgnews
@@ -177,3 +191,68 @@ def test_readme_mentions_every_workflow_file():
 def test_pyproject_has_postgres_extra():
     text = (ROOT / "pyproject.toml").read_text()
     assert 'postgres = ["psycopg[binary]"]' in text
+
+
+def test_run_strings_contain_no_expressions():
+    for path in WORKFLOWS:
+        for line in run_lines(load(path)):
+            assert "${{" not in line, f"{path.name}: expression inside run: {line!r}"
+
+
+def test_tgnews_line_validator_rejects_extra_tokens():
+    valid = subcommands()
+    assert_valid_tgnews_line("t", "tgnews run", valid)
+    assert_valid_tgnews_line("t", "tgnews run --ignore-slots", valid)
+    assert_valid_tgnews_line("t", "tgnews dry-run --out ./out", valid)
+    for bad in ("tgnews run extra", "tgnews run --force", "tgnews publish-approved --ignore-slots",
+                "tgnews dry-run", "tgnews dry-run --out", "tgnews bogus", "tgnews report; curl x"):
+        with pytest.raises(AssertionError):
+            assert_valid_tgnews_line("t", bad, valid)
+
+
+IG_ENV = {"IG_ACCESS_TOKEN", "IG_USER_ID", "IG_API_VERSION"}
+STORAGE_ENV = {"STORAGE_ENDPOINT", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY",
+               "STORAGE_BUCKET", "STORAGE_PUBLIC_BASE"}
+
+
+def required_env(cmd: str) -> set[str]:
+    """Required env names per subcommand, derived from cli.py's own _NEEDS_* sets plus the
+    unconditional requirements in build_deps (DATABASE_URL for everything but dry-run;
+    storage for `run`). Telegram is optional in the code, but the workflows must pass it."""
+    need = {"DATABASE_URL"} if cmd != "dry-run" else set()
+    if cmd in cli._NEEDS_LLM:
+        need.add("ANTHROPIC_API_KEY")
+    if cmd in cli._NEEDS_IG:
+        need |= IG_ENV
+    if cmd == "run":
+        need |= STORAGE_ENV | IG_ENV  # IG is needed whenever MODE=auto, and the workflow must support it
+    if cmd == "publish-approved":
+        need |= IG_ENV  # purpose name is "publish" in build_deps
+    return need | {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
+
+
+def test_every_step_passes_the_env_its_subcommand_needs():
+    # sanity: the cli constants this test relies on still exist
+    assert cli._NEEDS_LLM and cli._NEEDS_IG
+    checked = set()
+    for path in WORKFLOWS:
+        for job in load(path)["jobs"].values():
+            for step in job["steps"]:
+                line = step.get("run", "").strip()
+                if not line.startswith("tgnews "):
+                    continue
+                cmd = line.split()[1]
+                missing = required_env(cmd) - set(step.get("env") or {})
+                assert not missing, f"{path.name}: `{line}` is missing env {sorted(missing)}"
+                checked.add(cmd)
+    assert {"run", "publish-approved", "analyze", "report", "refresh-token"} <= checked
+
+
+def test_dropping_storage_from_run_step_would_fail():
+    assert STORAGE_ENV <= required_env("run")
+    assert not STORAGE_ENV & required_env("report")
+
+
+def test_normalised_database_url_documented():
+    assert "postgresql+psycopg://" in (ROOT / "README.md").read_text()
+    assert "postgres://" in (ROOT / ".env.example").read_text()

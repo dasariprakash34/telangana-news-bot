@@ -55,3 +55,19 @@ def test_bad_slot_settings_raise(env):
         return
     with pytest.raises(ValueError):
         Settings.from_env(env)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("postgres://u:p@h:5432/d", "postgresql+psycopg://u:p@h:5432/d"),
+    ("postgresql://u:p@h/d", "postgresql+psycopg://u:p@h/d"),
+    ("postgresql+psycopg://u:p@h/d", "postgresql+psycopg://u:p@h/d"),
+    ("sqlite:///tgnews.db", "sqlite:///tgnews.db"),
+    ("sqlite://", "sqlite://"),
+])
+def test_database_url_normalised(raw, expected):
+    assert Settings.from_env({"DATABASE_URL": raw}).database_url == expected
+
+
+def test_database_url_default_and_blank():
+    assert Settings.from_env({}).database_url == "sqlite:///tgnews.db"
+    assert Settings.from_env({"DATABASE_URL": ""}).database_url == "sqlite:///tgnews.db"

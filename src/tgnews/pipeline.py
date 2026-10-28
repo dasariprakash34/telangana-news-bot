@@ -337,18 +337,22 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
     if engine is None:
         raise PipelineError("publish_approved needs deps.engine")
     now = _aware(deps.now())
-    out.expired = gate.expire_old_drafts(engine, now)
+    if deps.instagram is not None:
+        _check_token(engine, now)  # first: an expired token pauses everything below
+    # Poll BEFORE expiring: publish-approved does not run 17:30-01:00 UTC, so an evening tap is
+    # first seen hours later. A tap on a still-`draft` post is honoured whatever its age; expiry
+    # then only removes drafts nobody acted on.
     if deps.telegram is not None:
         try:
             out.decisions = len(gate.poll_decisions(engine, deps.telegram, now))
         except gate.TelegramError as exc:
             out.errors.append(f"poll: {sanitize_error(exc)}")
+    out.expired = gate.expire_old_drafts(engine, now)
     approved = db.list_posts_by_state(engine, PostState.approved)
     if deps.instagram is None:
         if approved:
             raise PipelineError("approved posts exist but no Instagram client is configured")
         return out
-    _check_token(engine, now)  # before any Instagram call, reconcile included
     out.reconciled = len(publish.reconcile_publishing(engine, deps.instagram, now))
     for post in approved:
         try:

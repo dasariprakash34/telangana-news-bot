@@ -432,3 +432,54 @@ def test_empty_time_slots_raise_clear_error(engine):
         nearest_slot((), NOW)
     with pytest.raises(ValueError, match="time_slots"):
         active_slots(settings(time_slots=()), NOW, engine)
+
+
+class PollTG:
+    chat_id = "1"
+
+    def __init__(self, updates=()):
+        self.updates, self.calls = list(updates), []
+
+    def call(self, method, **payload):
+        self.calls.append((method, payload))
+        if method == "getUpdates":
+            return [u for u in self.updates if u["update_id"] >= payload.get("offset", 0)]
+        return {"message_id": 1}
+
+
+def _old_draft(engine, n, hours):
+    from sqlalchemy import update
+    db.save_story(engine, story(n))
+    pid = db.save_post(engine, story_id=f"s{n}", format="card", state=PostState.draft)
+    db.set_post_caption(engine, pid, "c")
+    with engine.begin() as c:
+        c.execute(db.drafts.insert().values(post_id=pid, caption="c", slides=["https://cdn.example.com/a.jpg"]))
+        c.execute(update(db.posts).where(db.posts.c.id == pid).values(created_at=NOW - timedelta(hours=hours)))
+    return pid
+
+
+def test_late_approval_on_old_draft_is_honoured_and_published(engine, tmp_path):
+    pid = _old_draft(engine, 1, 8)
+    tap = {"update_id": 1, "callback_query": {"id": "q", "data": f"a:{pid}",
+                                              "message": {"message_id": 5, "chat": {"id": 1}}}}
+    ig = FakeIG()
+    result = publish_approved(settings(), make_deps(engine, tmp_path, [], ig=ig, tg=PollTG([tap])))
+    assert db.get_post(engine, pid).state is PostState.published
+    assert (result.decisions, result.expired, result.published) == (1, 0, 1)
+
+
+def test_old_draft_without_decision_still_expires(engine, tmp_path):
+    pid = _old_draft(engine, 1, 8)
+    result = publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG(), tg=PollTG()))
+    assert db.get_post(engine, pid).state is PostState.expired
+    assert (result.decisions, result.expired, result.published) == (0, 1, 0)
+
+
+def test_publish_approved_order_token_poll_expire_reconcile(engine, tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(pipeline, "_check_token", lambda *a, **k: order.append("token"))
+    monkeypatch.setattr(pipeline.gate, "poll_decisions", lambda *a, **k: order.append("poll") or [])
+    monkeypatch.setattr(pipeline.gate, "expire_old_drafts", lambda *a, **k: order.append("expire") or 0)
+    monkeypatch.setattr(pipeline.publish, "reconcile_publishing", lambda *a, **k: order.append("reconcile") or [])
+    publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG(), tg=PollTG()))
+    assert order == ["token", "poll", "expire", "reconcile"]

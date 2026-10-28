@@ -2,10 +2,10 @@ name: tgnews publish approved
 
 on:
   schedule:
-    # Every 30 minutes from 01:00 to 17:30 UTC (06:30 to 23:00 IST). Approvals therefore publish
-    # with up to ~30 minutes of delay. Two entries because one cron cannot express 17:00 and 17:30 only.
-    - cron: "0,30 1-16 * * *" # 06:30-22:30 IST, half-hourly
-    - cron: "0,30 17 * * *"   # 22:30 and 23:00 IST
+    # Every 30 minutes from 01:00 to 17:30 UTC (06:30 to 23:00 IST). There is no run from 17:30 to 01:00 UTC, so an evening approval is
+    # picked up at the next run (01:00 UTC at the latest); approvals made inside the window wait up to ~30 minutes. Two entries because one cron cannot express 17:00 and 17:30 only.
+    - cron: "0,30 1-16 * * *" # 01:00-16:30 UTC = 06:30-22:00 IST
+    - cron: "0,30 17 * * *"   # 17:00 and 17:30 UTC = 22:30 and 23:00 IST
   workflow_dispatch:
 
 # Single shared group for ALL tgnews workflows, so two runs never overlap. This is the guard
