@@ -1,6 +1,7 @@
 # RSS sources for tgnews. Add only feeds whose terms allow republishing summaries.
-feeds: []
-# Example format:
-# feeds:
-#   - name: Example Telangana News
-#     url: https://news.example.com/telangana/rss.xml
+# The Hindu (Telangana): URL taken from a third-party feed list; NOT yet confirmed to load
+# and The Hindu's republishing terms are NOT yet checked by the owner. Review mode only
+# until both are confirmed.
+feeds:
+  - name: The Hindu
+    url: https://www.thehindu.com/news/national/telangana/feeder/default.rss
