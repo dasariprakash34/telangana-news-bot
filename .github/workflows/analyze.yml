@@ -1,0 +1,48 @@
+name: tgnews analyze
+
+on:
+  schedule:
+    - cron: "20 20 * * *" # daily, 01:50 IST
+  workflow_dispatch:
+
+# Single shared group for ALL tgnews workflows, so two runs never overlap. This is the guard
+# against overlapping runs double-posting. A new run does not cancel one already in progress.
+concurrency:
+  group: tgnews
+  cancel-in-progress: false
+
+# Least privilege: the jobs only read the repository. Everything else goes through secrets.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Telugu text needs complex-script shaping; the app refuses to start without raqm.
+      - name: Install system libraries for Telugu text shaping
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b
+      # DATABASE_URL must be a HOSTED Postgres URL (runners have no persistent disk); never sqlite here.
+      - name: Install tgnews
+        run: python -m pip install -e ".[postgres]"
+      - name: Pull insights and update the learning table
+        run: tgnews analyze
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_API_VERSION: ${{ secrets.IG_API_VERSION }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ vars.MODE || 'review' }}
+          DAILY_CAP: ${{ vars.DAILY_CAP }}
+          BRAND_NAME: ${{ vars.BRAND_NAME }}
+          TIME_SLOTS: ${{ vars.TIME_SLOTS }}
+          ACTIVE_SLOT_COUNT: ${{ vars.ACTIVE_SLOT_COUNT }}
