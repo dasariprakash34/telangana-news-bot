@@ -1,7 +1,11 @@
 # RSS sources for tgnews. Add only feeds whose terms allow republishing summaries.
-# The Hindu (Telangana): URL taken from a third-party feed list; NOT yet confirmed to load
-# and The Hindu's republishing terms are NOT yet checked by the owner. Review mode only
+# All three feeds were opened in a browser on 2026-10-28 and returned current stories.
+# Republishing terms of The Hindu and Telangana Today are NOT yet checked by the owner. Review mode only
 # until both are confirmed.
 feeds:
   - name: The Hindu
     url: https://www.thehindu.com/news/national/telangana/feeder/default.rss
+  - name: The Hindu
+    url: https://www.thehindu.com/news/cities/Hyderabad/feeder/default.rss
+  - name: Telangana Today
+    url: https://telanganatoday.com/feed
