@@ -177,6 +177,18 @@ def claim_post(engine: Engine, post_id: int, now: datetime | None = None) -> boo
         return res.rowcount == 1
 
 
+def transition_post_state(engine: Engine, post_id: int, frm: PostState, to: PostState,
+                          now: datetime | None = None) -> bool:
+    """Compare-and-set: move a post from `frm` to `to` in ONE conditional UPDATE. True only if
+    this call changed the row; a post in any other state (stale read) is left untouched."""
+    stamp = _utc(now) if now is not None else _now()
+    with engine.begin() as conn:
+        res = conn.execute(update(posts).where(
+            posts.c.id == post_id, posts.c.state == frm.value,
+        ).values(state=to.value, updated_at=stamp))
+        return res.rowcount == 1
+
+
 def fail_unpublished(engine: Engine, post_id: int) -> bool:
     """Mark failed ONLY if still publishing with no media id (never touches a live post)."""
     with engine.begin() as conn:
@@ -198,6 +210,14 @@ def media_ids_in_use(engine: Engine, exclude_post_id: int) -> set[str]:
 def set_post_caption(engine: Engine, post_id: int, caption: str) -> None:
     with engine.begin() as conn:
         conn.execute(update(posts).where(posts.c.id == post_id).values(caption=caption))
+
+
+def set_post_caption_if_state(engine: Engine, post_id: int, caption: str, state: PostState) -> bool:
+    """Write the caption only while the post is still in `state` (single conditional UPDATE)."""
+    with engine.begin() as conn:
+        res = conn.execute(update(posts).where(
+            posts.c.id == post_id, posts.c.state == state.value).values(caption=caption))
+        return res.rowcount == 1
 
 
 def set_post_container(engine: Engine, post_id: int, container_id: str) -> None:

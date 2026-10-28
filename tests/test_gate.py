@@ -207,3 +207,109 @@ def test_from_env_requires_vars():
         TelegramClient.from_env({"TELEGRAM_BOT_TOKEN": TOKEN})
     c = TelegramClient.from_env({"TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_CHAT_ID": CHAT})
     assert c.chat_id == CHAT and TOKEN not in repr(c)
+
+
+# -- atomic transitions / failure isolation -----------------------------------
+def _flip_after_read(monkeypatch, engine, pid, to):
+    """Make db.get_post/list_posts_by_state return the stale (draft) view, then flip the row."""
+    real_get, real_list = db.get_post, db.list_posts_by_state
+
+    def flip():
+        db.update_post_state(engine, pid, to)
+
+    def get_post(e, i):
+        p = real_get(e, i)
+        flip()
+        return p
+
+    def list_by_state(e, s):
+        out = real_list(e, s)
+        flip()
+        return out
+
+    monkeypatch.setattr(db, "get_post", get_post)
+    monkeypatch.setattr(db, "list_posts_by_state", list_by_state)
+
+
+@pytest.mark.parametrize("action", ["a", "r"])
+@pytest.mark.parametrize("winner", [PostState.expired, PostState.publishing])
+def test_stale_read_does_not_overwrite_state(engine, fake, draft, monkeypatch, action, winner):
+    fake.updates = [cb(1, draft, action)]
+    _flip_after_read(monkeypatch, engine, draft, winner)
+    assert gate.poll_decisions(engine, fake.client(), NOW) == []
+    assert state(engine, draft) == winner
+    assert "no longer pending" in fake.of("answerCallbackQuery")[0]["text"]
+
+
+def test_stale_read_does_not_overwrite_caption(engine, fake, draft, monkeypatch):
+    fake.updates = [cb(1, draft, "e")]
+    gate.poll_decisions(engine, fake.client(), NOW)
+    fake.updates = [reply(2, "వర్షాలతో నగరం అతలాకుతలం అయింది. మూలం: The Hindu", 101)]
+    _flip_after_read(monkeypatch, engine, draft, PostState.approved)
+    assert gate.poll_decisions(engine, fake.client(), NOW) == []
+    assert db.get_post(engine, draft).caption == CAPTION
+    assert "no longer pending" in fake.of("sendMessage")[-1]["text"]
+
+
+def test_expire_stale_read_does_not_overwrite_approved(engine, monkeypatch):
+    from sqlalchemy import update
+    pid = db.save_post(engine, story_id="s1", format="single", state=PostState.draft)
+    with engine.begin() as conn:
+        conn.execute(update(db.posts).where(db.posts.c.id == pid)
+                     .values(created_at=NOW - timedelta(hours=9)))
+    _flip_after_read(monkeypatch, engine, pid, PostState.approved)
+    assert gate.expire_old_drafts(engine, NOW) == 0
+    assert state(engine, pid) == PostState.approved
+
+
+def test_approved_post_never_expired(engine):
+    from sqlalchemy import update
+    pid = db.save_post(engine, story_id="s1", format="single", state=PostState.approved)
+    with engine.begin() as conn:
+        conn.execute(update(db.posts).where(db.posts.c.id == pid)
+                     .values(created_at=NOW - timedelta(hours=99)))
+    assert gate.expire_old_drafts(engine, NOW) == 0
+    assert state(engine, pid) == PostState.approved
+    assert db.transition_post_state(engine, pid, PostState.draft, PostState.expired) is False
+
+
+def test_handler_failure_keeps_earlier_decisions(engine, fake, draft, monkeypatch, caplog):
+    p2 = db.save_post(engine, story_id="s1", format="single", state=PostState.draft)
+    fake.updates = [cb(1, draft, "a"), cb(2, p2, "r"), cb(3, draft, "r")]
+    real = db.transition_post_state
+
+    def flaky(e, pid, frm, to, now=None):
+        if pid == p2:
+            raise RuntimeError(f"boom {TOKEN}")
+        return real(e, pid, frm, to, now)
+
+    monkeypatch.setattr(db, "transition_post_state", flaky)
+    out = gate.poll_decisions(engine, fake.client(), NOW)
+    assert out == [Decision(post_id=draft, action="approve")]
+    assert state(engine, p2) == PostState.draft
+    assert db.get_kv(engine, gate.KV_OFFSET) == "4"
+    assert TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("token", ["bad token\nwith newline", "http://[::1"])
+def test_malformed_token_error_is_sanitized(token):
+    class Boom:
+        def post(self, url, **kw):
+            raise httpx.InvalidURL(f"Invalid URL {url}")
+
+    c = TelegramClient(token, CHAT, http=Boom())
+    with pytest.raises(TelegramError) as ei:
+        c.call("getMe")
+    assert token not in str(ei.value) and ei.value.__cause__ is None
+
+
+def test_send_message_failure_after_photos_is_logged(engine, caplog):
+    def h(request):
+        if request.url.path.endswith("sendMessage"):
+            return httpx.Response(500, json={"ok": False, "description": "oops"})
+        return httpx.Response(200, json={"ok": True, "result": []})
+
+    c = TelegramClient(TOKEN, CHAT, http=httpx.Client(transport=httpx.MockTransport(h)))
+    with pytest.raises(TelegramError):
+        gate.send_draft(engine, c, 1, PREVIEWS, CAPTION)
+    assert "previews were sent" in caplog.text and TOKEN not in caplog.text

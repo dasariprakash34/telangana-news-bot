@@ -21,6 +21,7 @@ from .models import PostState
 from .rewrite import RewrittenPost, validate
 
 # httpx logs full request URLs at INFO, and the token is part of the Telegram URL path.
+log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -71,7 +72,7 @@ class TelegramClient:
         url = f"{API_BASE}/bot{self._token}/{method}"
         try:
             resp = self._http.post(url, json=payload)
-        except httpx.HTTPError as exc:
+        except Exception as exc:  # incl. httpx.InvalidURL, whose message may hold the token
             # Re-raise without the exception chain: it carries the URL (and so the token).
             raise TelegramError(f"{method} request failed: {type(exc).__name__}") from None
         try:
@@ -99,8 +100,14 @@ def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: l
         {"text": "Reject", "callback_data": f"r:{post_id}"},
         {"text": "Edit caption", "callback_data": f"e:{post_id}"},
     ]]}
-    msg = client.call("sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
-                      text=f"Draft post #{post_id}\n\n{caption}")
+    try:
+        msg = client.call("sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
+                          text=f"Draft post #{post_id}\n\n{caption}")
+    except TelegramError as exc:
+        if previews:
+            log.warning("draft %s: previews were sent but the review message failed: %s",
+                        post_id, exc)
+        raise
     db.set_kv(engine, f"{KV_MSG_PREFIX}{msg['message_id']}", str(post_id))
     with engine.begin() as conn:
         conn.execute(db.drafts.insert().values(
@@ -126,9 +133,14 @@ def poll_decisions(engine: Engine, client: TelegramClient, now: datetime) -> lis
                 d = _handle_message(engine, client, upd["message"])
             else:
                 d = None
-        finally:
-            # Persist progress per update so a crash/failure never re-applies earlier updates.
-            db.set_kv(engine, KV_OFFSET, str(upd["update_id"] + 1))
+        except Exception as exc:
+            # Handlers are idempotent (compare-and-set), so a tap lost here is safe to drop:
+            # the draft stays draft. Log only the type/sanitized text, keep going.
+            msg = client._scrub(str(exc)) if isinstance(exc, TelegramError) else type(exc).__name__
+            log.warning("skipping update %s: %s", upd.get("update_id"), msg)
+            d = None
+        # Persist progress per update so earlier updates are never re-applied.
+        db.set_kv(engine, KV_OFFSET, str(upd["update_id"] + 1))
         if d:
             decisions.append(d)
     return decisions
@@ -167,8 +179,11 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
         db.set_kv(engine, f"{KV_MSG_PREFIX}{prompt['message_id']}", str(post_id))
         _safe(client, "answerCallbackQuery", callback_query_id=cq["id"], text="Send the new caption")
         return None
-    db.update_post_state(engine, post_id,
-                         PostState.approved if action == "approve" else PostState.rejected)
+    target = PostState.approved if action == "approve" else PostState.rejected
+    if not db.transition_post_state(engine, post_id, PostState.draft, target):
+        _safe(client, "answerCallbackQuery", callback_query_id=cq["id"],
+              text="This draft is no longer pending.")
+        return None
     _safe(client, "answerCallbackQuery", callback_query_id=cq["id"],
           text="Approved" if action == "approve" else "Rejected")
     return Decision(post_id=post_id, action=action)
@@ -193,7 +208,11 @@ def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, An
         _safe(client, "sendMessage", chat_id=client.chat_id, reply_to_message_id=msg.get("message_id"),
               text="Caption not saved (old caption kept):\n- " + "\n- ".join(problems))
         return None
-    db.set_post_caption(engine, post_id, text)
+    if not db.set_post_caption_if_state(engine, post_id, text, PostState.draft):
+        _safe(client, "sendMessage", chat_id=client.chat_id,
+              reply_to_message_id=msg.get("message_id"),
+              text=f"Post #{post_id} is no longer pending; caption not changed.")
+        return None
     _safe(client, "sendMessage", chat_id=client.chat_id, reply_to_message_id=msg.get("message_id"),
           text=f"Caption updated for post #{post_id}. It still needs Approve.")
     return Decision(post_id=post_id, action="edit", caption=text)
@@ -224,6 +243,6 @@ def expire_old_drafts(engine: Engine, now: datetime, max_age_hours: int = 6) -> 
     n = 0
     for post in db.list_posts_by_state(engine, PostState.draft):
         if post.created_at is not None and post.created_at < cutoff:
-            db.update_post_state(engine, post.id, PostState.expired)
-            n += 1
+            if db.transition_post_state(engine, post.id, PostState.draft, PostState.expired, now):
+                n += 1
     return n
