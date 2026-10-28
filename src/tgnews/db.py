@@ -261,3 +261,8 @@ def posts_due_for_analysis(engine: Engine, now: datetime) -> list[Post]:
                                 posts.c.metrics.is_(None))
             .order_by(posts.c.posted_at)).all()
     return [p for p in map(_row_to_post, rows) if p.posted_at <= cutoff]
+
+
+def set_post_metrics(engine: Engine, post_id: int, metrics: dict) -> None:
+    with engine.begin() as conn:
+        conn.execute(update(posts).where(posts.c.id == post_id).values(metrics=metrics))
