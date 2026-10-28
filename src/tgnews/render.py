@@ -6,6 +6,7 @@ engine and the bundled Noto Sans Telugu font (SIL OFL, see assets/fonts/OFL.txt)
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import unicodedata
 from dataclasses import dataclass
@@ -266,9 +267,11 @@ def _panel_and_frame(style, theme, brand, topic, index, total) -> Image.Image:
     label = TOPIC_LABEL.get(topic, TOPIC_LABEL["other"])
     chip_w = int(_width(draw, label, chip_font)) + 48
     chip_h = 58
-    brand_max = inner_w - chip_w - 32
+    logo_w = _draw_map_logo(draw, MARGIN, MARGIN - 4, LOGO_H, theme.text, theme.bg_bottom)
+    brand_x = MARGIN + logo_w + 22
+    brand_max = inner_w - chip_w - 32 - logo_w - 22
     brand_lines = _truncate_to_fit(draw, brand, bfont, brand_max, 1) if _width(draw, brand, bfont) > brand_max else [brand]
-    draw.text((MARGIN, MARGIN), brand_lines[0], font=bfont, fill=theme.text)
+    draw.text((brand_x, MARGIN + 8), brand_lines[0], font=bfont, fill=theme.text)
     cx = WIDTH - MARGIN - chip_w
     draw.rounded_rectangle([cx, MARGIN, cx + chip_w - 1, MARGIN + chip_h], radius=chip_h // 2, fill=theme.accent)
     draw.text((cx + 24, MARGIN + 4), label, font=chip_font, fill=theme.bg_bottom)
@@ -283,6 +286,38 @@ def _panel_and_frame(style, theme, brand, topic, index, total) -> Image.Image:
     else:
         draw.rounded_rectangle([MARGIN, bar_y, MARGIN + 160, bar_y + 8], radius=4, fill=theme.accent)
     return img
+
+
+MAP_PATH = Path(__file__).resolve().parent / "assets" / "telangana.json"
+LOGO_H = 64  # height of the map icon in the header
+
+
+@lru_cache(maxsize=1)
+def _map_data() -> dict:
+    return json.loads(MAP_PATH.read_text(encoding="utf-8"))
+
+
+def _draw_map_logo(draw: ImageDraw.ImageDraw, x: int, y: int, h: int, fill, dot) -> int:
+    """Telangana outline (public-domain Natural Earth boundary) with a dot at Hyderabad.
+    Returns the icon width."""
+    data = _map_data()
+    ring = data["ring"]
+    lons, lats = [p[0] for p in ring], [p[1] for p in ring]
+    lat0 = sum(lats) / len(lats)
+    kx = math.cos(math.radians(lat0))  # shrink longitude so the shape is not stretched
+    minx, maxx, miny, maxy = min(lons), max(lons), min(lats), max(lats)
+    scale = h / (maxy - miny)
+    w = int((maxx - minx) * kx * scale)
+
+    def proj(lon, lat):
+        return (x + (lon - minx) * kx * scale, y + (maxy - lat) * scale)
+
+    draw.polygon([proj(*p) for p in ring], fill=fill)
+    hx, hy = proj(*data["hyderabad"])
+    r = max(4, h // 11)
+    draw.ellipse([hx - r - 2, hy - r - 2, hx + r + 2, hy + r + 2], fill=fill)
+    draw.ellipse([hx - r, hy - r, hx + r, hy + r], fill=dot)
+    return w
 
 
 @lru_cache(maxsize=64)

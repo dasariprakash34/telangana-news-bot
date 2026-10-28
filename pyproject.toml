@@ -28,7 +28,7 @@ anthropic = ["anthropic"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-tgnews = ["blocklist.yaml", "assets/fonts/*.ttf", "assets/fonts/OFL.txt"]
+tgnews = ["blocklist.yaml", "assets/fonts/*.ttf", "assets/fonts/OFL.txt", "assets/telangana.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
