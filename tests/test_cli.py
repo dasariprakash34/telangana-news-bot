@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from tgnews import cli, db, pipeline
+from tgnews.config import ConfigError
 from tgnews.analyze import InsightsAborted
 from tgnews.models import PostState
 from tgnews.pipeline import Deps
@@ -143,3 +144,42 @@ def test_build_deps_requires_ig_api_version_and_hides_secrets(engine):
     with pytest.raises(Exception) as ei:
         cli.build_deps(Settings.from_env(env), env, purpose="publish")
     assert "IG_API_VERSION" in str(ei.value) and SECRET not in str(ei.value)
+
+
+def test_malformed_database_url_leaks_no_password(capsys):
+    url = "postgres://user:p@ss:w0rdSecret@host:5432/db"
+    tg = TG()
+    code = cli.main(["analyze"], {"DATABASE_URL": url, "TELEGRAM_BOT_TOKEN": "x"}, alert_client=lambda e: tg)
+    out = capsys.readouterr()
+    assert code == 1
+    for blob in (out.out, out.err, str(tg.calls)):
+        for frag in ("w0rdSecret", "p@ss", "user:p"):
+            assert frag not in blob
+    assert "DATABASE_URL is invalid or the database is unreachable" in out.err
+    assert tg.calls
+
+
+def test_arbitrary_value_errors_are_shown_as_type_only():
+    assert cli._describe(ValueError("contains secretvalue"), {}) == "ValueError"
+    assert "MODE" in cli._describe(ConfigError("MODE must be one of x"), {})
+
+
+def test_config_errors_never_echo_values():
+    from tgnews.config import Settings
+    for env in ({"MODE": "hunter2x"}, {"DAILY_CAP": "hunter2x"}, {"TIME_SLOTS": "hunter2x"},
+                {"ACTIVE_SLOT_COUNT": "hunter2x"}, {"PER_RUN_CAP": "hunter2x"}):
+        with pytest.raises(ConfigError) as ei:
+            Settings.from_env(env)
+        assert "hunter2x" not in str(ei.value)
+
+
+def test_run_alerts_on_empty_fetch_but_exits_zero(engine, monkeypatch, capsys):
+    tg = TG()
+    summary = pipeline.RunSummary(fetch_alert="all sources failed")
+    monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: summary)
+    assert run(["run"], builder(engine, telegram=tg)) == 0
+    assert tg.calls and "all sources failed" in tg.calls[0][1]["text"]
+    quiet = pipeline.RunSummary()
+    monkeypatch.setattr(cli.pipeline, "run_once", lambda s, d, *, ignore_slots=False: quiet)
+    tg2 = TG()
+    assert run(["run"], builder(engine, telegram=tg2)) == 0 and tg2.calls == []

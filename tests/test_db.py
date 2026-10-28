@@ -137,3 +137,16 @@ def test_init_adds_new_columns_to_existing_posts_table():
     db.init(e)  # idempotent
     db.set_post_container(e, 1, "c")  # would raise if column missing
     assert db.claim_post(e, 1) in (True, False)  # claimed_at column exists
+
+
+def test_release_story_only_when_no_post_references_it(engine):
+    from datetime import datetime, timezone
+    from tgnews.models import Story
+    st = Story(id="r1", title="t", summary="s", url="https://example.com/r1", source_name="x",
+               published_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert db.save_story(engine, st) is True
+    assert db.release_story(engine, "r1") is True
+    assert db.story_seen(engine, st.url) is False and db.release_story(engine, "r1") is False
+    db.save_story(engine, st)
+    db.save_post(engine, story_id="r1", format="card")
+    assert db.release_story(engine, "r1") is False and db.story_seen(engine, st.url) is True

@@ -137,7 +137,7 @@ def test_post_runs_then_publishes_approved():
     assert lines == ["tgnews run", "tgnews publish-approved"]
 
 
-def test_publish_approved_covers_0100_to_1730_every_30_min():
+def test_publish_approved_covers_0115_to_1745_every_30_min_off_the_slot_marks():
     fired = set()
     for c in triggers(load(WF_DIR / "publish-approved.yml"))["schedule"]:
         minute, hour, *_ = c["cron"].split()
@@ -145,7 +145,8 @@ def test_publish_approved_covers_0100_to_1730_every_30_min():
         for h in hours:
             for m in minute.split(","):
                 fired.add(h * 60 + int(m))
-    assert fired == set(range(60, 17 * 60 + 31, 30))
+    assert fired == set(range(75, 17 * 60 + 46, 30))
+    assert not any(t % 30 == 0 for t in fired)  # never on :00 / :30, where post slots run
 
 
 def _read_env_names() -> set[str]:

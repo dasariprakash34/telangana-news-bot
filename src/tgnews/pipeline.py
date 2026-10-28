@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 from . import db, gate, learn, publish, safety
 from .config import Settings
 from .dedupe import dedupe
+from .fetch import FetchReport
 from .instagram import InstagramClient, InstagramError
 from .models import PostState, Story
 from .render import ShapingUnavailable, assert_shaping_available, render_card, render_carousel
@@ -38,6 +39,8 @@ MAX_STORY_AGE = timedelta(hours=48)
 CAP_WINDOW = timedelta(hours=24)
 NOT_COUNTED = (PostState.rejected, PostState.expired, PostState.failed)
 FORMATS = learn.FORMATS
+MAX_CAPTION_CHARS = 2200  # Instagram caption limit
+MAX_INFRA_FAILURES = 2  # consecutive infrastructure failures before the run stops
 _PROPAGATE = (BlocklistError, ShapingUnavailable, anthropic.AuthenticationError,
               anthropic.PermissionDeniedError)
 _SAFE_MESSAGE = (InstagramError, publish.PublishError, StorageError, gate.TelegramError, RewriteFailed)
@@ -62,6 +65,7 @@ class Deps:
     telegram: gate.TelegramClient | None = None
     rng_factory: Callable[[], random.Random] = random.Random
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    fetch_report: FetchReport | None = None  # filled by the fetcher when it can report failures
     out_dir: Path = Path("tgnews-out")
     sleep: Callable[[float], None] = time.sleep
     check_shaping: Callable[[], None] = assert_shaping_available
@@ -74,6 +78,8 @@ class RunSummary:
     skipped_blocked: int = 0
     skipped_stale: int = 0
     skipped_duplicate: int = 0
+    per_run_cap_reached: bool = False
+    fetch_alert: str | None = None  # set when an active slot fetched nothing (CLI alerts on it)
     drafted: int = 0
     held: int = 0
     published: int = 0
@@ -145,11 +151,19 @@ def active_slots(settings: Settings, now: datetime, engine: Engine) -> tuple[str
 
 # -- helpers ----------------------------------------------------------------
 def compose_caption(post: RewrittenPost) -> str:
-    extra = [h for h in post.hashtags if h not in post.caption_te]
-    return post.caption_te + ("\n\n" + " ".join(extra) if extra else "")
+    """Caption body plus hashtags within Instagram's 2200-character limit: trailing hashtags are
+    dropped until it fits; the body is never truncated (too long on its own is a story error)."""
+    body = post.caption_te
+    if len(body) > MAX_CAPTION_CHARS:
+        raise RewriteFailed(f"caption is {len(body)} characters; Instagram allows {MAX_CAPTION_CHARS}")
+    extra = [h for h in post.hashtags if h not in body]
+    while extra and len(body) + 2 + len(" ".join(extra)) > MAX_CAPTION_CHARS:
+        extra.pop()
+    return body + ("\n\n" + " ".join(extra) if extra else "")
 
 
 AUTH_CODES = (190, 102)
+_INFRA = (StorageError, gate.TelegramError, publish.PublishError, InstagramError)
 
 
 def is_auth_failure(exc: BaseException) -> bool:
@@ -194,6 +208,7 @@ class _Ctx:
     out_dir: Path
     dry_out: Path | None = None  # set in dry-run: write files instead of upload/gate/publish
     seq: int = 0
+    created: int = 0  # posts/drafts created in this run
 
 
 # -- the run ----------------------------------------------------------------
@@ -235,6 +250,14 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
 
     stories = deps.fetch()
     summary.fetched = len(stories)
+    if not stories:
+        rep = deps.fetch_report
+        if rep is not None and rep.sources == 0:
+            summary.fetch_alert = "no sources configured"
+        elif rep is not None and rep.failed >= rep.sources:
+            summary.fetch_alert = "all sources failed"
+        else:
+            summary.fetch_alert = "no stories fetched"
     fresh = []
     for s in stories:
         if now - _aware(s.published_at) > MAX_STORY_AGE:
@@ -247,36 +270,50 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
 
     ctx = _Ctx(settings, deps, engine, now, slot, deps.rng_factory(), summary,
                deps.out_dir, dry_out)
+    infra_failures = 0
     while candidates:
         if _over_cap(settings, engine, now):
             summary.cap_reached = True
             break
+        if ctx.created >= settings.effective_per_run_cap:
+            summary.per_run_cap_reached = True
+            break
         topic = learn.choose(engine, "topic", TOPICS, ctx.rng)
         story = _pick_story(candidates, topic)
+        created_before = ctx.created
         try:
-            _process(ctx, story)
+            if _process(ctx, story):
+                infra_failures = 0
         except _PROPAGATE:
             raise
         except Exception as exc:
             summary.failed += 1
             summary.errors.append(f"{story.id}: {sanitize_error(exc)}")
             log.warning("story %s failed: %s", story.id, sanitize_error(exc))
+            if isinstance(exc, _INFRA):
+                infra_failures += 1
+                if ctx.created == created_before:  # nothing was posted/drafted: allow a retry
+                    db.release_story(engine, story.id)
             if is_auth_failure(exc):
                 raise _abort_auth(exc) from None
+            if infra_failures >= MAX_INFRA_FAILURES:
+                raise PipelineError(f"stopping run after {infra_failures} consecutive infrastructure "
+                                    f"failures (last: {sanitize_error(exc)})") from None
     return summary
 
 
-def _process(ctx: _Ctx, story: Story) -> None:
+def _process(ctx: _Ctx, story: Story) -> bool:
+    """True when a post/draft was created and handled; False for a skip."""
     s, deps, engine = ctx.summary, ctx.deps, ctx.engine
     verdict = safety.check(story, ctx.settings.mode)
     if verdict is Verdict.BLOCK:
         s.skipped_blocked += 1
-        return
+        return False
     # Atomic claim, before any rewrite/upload/post work: an overlapping run that got here first
     # owns the story. Seen from here on, even if a later stage fails.
     if not db.save_story(engine, story):
         s.skipped_duplicate += 1
-        return
+        return False
     style = learn.choose(engine, "headline_style", STYLES, ctx.rng)
     fmt = learn.choose(engine, "format", FORMATS, ctx.rng)
     rewritten = rewrite(story, deps.llm, style)
@@ -289,13 +326,14 @@ def _process(ctx: _Ctx, story: Story) -> None:
     auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW
     post_id = db.save_post(engine, story_id=story.id, format=fmt, topic=rewritten.topic,
                            time_slot=ctx.slot, headline_style=style, state=PostState.draft)
+    ctx.created += 1
     db.set_post_caption(engine, post_id, caption)
     if auto_publish:
         if not db.transition_post_state(engine, post_id, PostState.draft, PostState.approved):
             raise publish.PublishError(f"post {post_id} could not be approved")
         publish.publish_post(post_id, urls, caption, deps.instagram, engine, sleep=deps.sleep)
         s.published += 1
-        return
+        return True
     if deps.telegram is not None:
         try:
             gate.send_draft(engine, deps.telegram, post_id, urls, caption)
@@ -310,10 +348,11 @@ def _process(ctx: _Ctx, story: Story) -> None:
             s.errors.append(msg)
     else:
         s.drafted += 1
+    return True
 
 
 def _dry_output(ctx: _Ctx, story: Story, verdict: Verdict, fmt: str, style: str,
-                rewritten: RewrittenPost, caption: str) -> None:
+                rewritten: RewrittenPost, caption: str) -> bool:
     folder = ctx.dry_out / f"{ctx.seq:02d}-{story.id}"
     ctx.deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
     (folder / "caption.txt").write_text(caption, encoding="utf-8")
@@ -324,10 +363,12 @@ def _dry_output(ctx: _Ctx, story: Story, verdict: Verdict, fmt: str, style: str,
         encoding="utf-8")
     db.save_post(ctx.engine, story_id=story.id, format=fmt, topic=rewritten.topic,
                  time_slot=ctx.slot, headline_style=style, state=PostState.draft)
+    ctx.created += 1
     if verdict is Verdict.HOLD:
         ctx.summary.held += 1
     else:
         ctx.summary.drafted += 1
+    return True
 
 
 # -- publish approved -------------------------------------------------------

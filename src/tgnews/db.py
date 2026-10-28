@@ -123,6 +123,16 @@ def save_story(engine: Engine, story: Story) -> bool:
         return False
 
 
+def release_story(engine: Engine, story_id: str) -> bool:
+    """Undo a story claim, but ONLY if no post row references it (a story with a post is never
+    released). True if the row was deleted."""
+    with engine.begin() as conn:
+        res = conn.execute(stories.delete().where(
+            stories.c.id == story_id,
+            ~select(posts.c.id).where(posts.c.story_id == stories.c.id).exists()))
+        return res.rowcount == 1
+
+
 def story_seen(engine: Engine, url: str) -> bool:
     with engine.connect() as conn:
         return conn.execute(select(stories.c.id).where(stories.c.url == url)).first() is not None

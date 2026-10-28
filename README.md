@@ -90,7 +90,7 @@ Repository **secrets**:
 
 (`STORAGE_REGION` may be an empty secret; the default is `auto`.)
 
-Repository **variables** (not secret): `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`. Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed; error output has them scrubbed.
+Repository **variables** (not secret): `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`, `PER_RUN_CAP` (most posts or drafts one run may create; default `ceil(DAILY_CAP / ACTIVE_SLOT_COUNT)`, so a single run cannot burst the whole day's allowance). Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed: error messages shown or sent to Telegram are limited to this project's own sanitized messages (anything else is reduced to its error type), and any secret value found in them is replaced with `[REDACTED]`. An invalid `DATABASE_URL` is reported only as "invalid or unreachable".
 
 If you change `TIME_SLOTS`, also edit the cron times in `.github/workflows/post.yml`, which must match the slots in UTC (a test checks the defaults).
 
@@ -118,7 +118,7 @@ All five support manual runs (`workflow_dispatch`) and share one `concurrency` g
 | File | When (UTC / IST) | What it does |
 |---|---|---|
 | `post.yml` | 02:00, 07:00, 13:00, 15:30 / 07:30, 12:30, 18:30, 21:00 | `tgnews run` (fetch, dedupe, safety, rewrite, render, upload, then draft to Telegram in review mode or publish in auto mode), then `tgnews publish-approved`. These match the default `TIME_SLOTS`. Each run takes the nearest slot; only the day's active slots post. |
-| `publish-approved.yml` | every 30 min, 01:00 to 17:30 / 06:30 to 23:00 | `tgnews publish-approved`: reads Telegram taps, then expires untouched drafts (older than 6 hours), then publishes approved posts. Approval behaviour: a tap is read when the next publish run polls Telegram, **before** old drafts are expired, so a tap on a still-pending draft is honoured even if the draft is older than 6 hours. Expiry only removes drafts nobody acted on. Latency: inside the window an approval publishes within about 30 minutes (longer if GitHub delays the run); an evening approval (after 17:30 UTC / 23:00 IST) publishes at the next run, 01:00 UTC (06:30 IST) at the latest. `post.yml` also runs `publish-approved` after each posting run. |
+| `publish-approved.yml` | every 30 min at :15 and :45, 01:15 to 17:45 / 06:45 to 23:15 | `tgnews publish-approved`: reads Telegram taps, then expires untouched drafts (older than 6 hours), then publishes approved posts. Approval behaviour: a tap is read when the next publish run polls Telegram, **before** old drafts are expired, so a tap on a still-pending draft is honoured even if the draft is older than 6 hours. Expiry only removes drafts nobody acted on. Latency: inside the window an approval publishes within about 30 minutes (longer if GitHub delays the run); an evening approval (after 17:45 UTC / 23:15 IST) publishes at the next run, 01:15 UTC (06:45 IST) at the latest. `post.yml` also runs `publish-approved` after each posting run. |
 | `analyze.yml` | daily 20:20 / 01:50 | `tgnews analyze`: pulls insights for posts at least 48 hours old and updates the learning table. |
 | `report.yml` | Mondays 03:10 / 08:40 | `tgnews report`: writes the weekly report and sends it to Telegram. |
 | `refresh-token.yml` | Sundays 04:40 / 10:10 | `tgnews refresh-token`: refreshes the Instagram token and stores it. |
@@ -141,7 +141,9 @@ The report (sent to Telegram on Mondays) is worded by Claude from numbers comput
 ## Known limitations
 
 - Only RSS sources are implemented. No news API is wired in.
-- A story is claimed (saved as seen) after it is chosen and passes the BLOCK check, and before rewriting. If rewriting, rendering, upload or publishing then fails, the story is not retried.
+- A story is claimed (saved as seen) after it is chosen and passes the BLOCK check, and before rewriting. If rewriting or rendering fails, or a post already exists for it, the story is not retried. If storage, Telegram or Instagram fails and no post row was created yet, the claim is released so a later run can retry it. After 2 consecutive such infrastructure failures the run stops with an error and a Telegram alert; an Instagram authentication failure stops it at once.
+- If a run on an active slot fetches no stories (no sources configured, all sources failed, or simply nothing found) it exits normally but sends a Telegram alert.
+- Operational notes below ("Token reset", "Re-queue a failed post") need direct database access.
 - Runs must not overlap. The shared concurrency group guards this in Actions; do not also run the CLI elsewhere against the same database and account.
 - A BLOCKed story is skipped before it is saved, so it is not remembered and is simply checked again on every run while it stays in the feed. HOLD stories are saved and become drafts (review mode) or held drafts (auto mode).
 - A failed publish is never retried blindly (to avoid duplicates); it is reconciled against Instagram's recent media on the next publish run.
@@ -155,3 +157,25 @@ pip install -e ".[dev]"
 pytest
 tgnews --help
 ```
+
+## Operations
+
+### Token reset
+
+After the first `refresh-token` run the newest Instagram token is stored in the database and **takes priority** over the `IG_ACCESS_TOKEN` secret. If you create a new token and update the `IG_ACCESS_TOKEN` secret, clear the stored one so the new secret is used (and the expiry guard resets):
+
+```sql
+DELETE FROM kv WHERE key IN ('ig_access_token', 'ig_token_expires_at');
+```
+
+### Re-queue a failed post
+
+A post in state `failed` was not published (a failure before the final publish call). It is not retried automatically. For a post made in review mode (it has a stored draft row with image URLs), you can send it back to the publish queue; the next `publish-approved` run publishes it:
+
+```sql
+UPDATE posts SET state = 'approved', container_id = NULL
+WHERE id = <POST_ID> AND state = 'failed' AND media_id IS NULL
+  AND EXISTS (SELECT 1 FROM drafts WHERE drafts.post_id = posts.id);
+```
+
+Check on Instagram first that the post did not go live. This is not offered for posts without a draft row (auto-mode posts, and drafts whose Telegram send failed): they have no stored image URLs, so `publish-approved` would mark them failed again.

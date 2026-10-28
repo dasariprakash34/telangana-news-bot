@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -7,6 +8,10 @@ VALID_MODES = ("review", "auto")
 DEFAULT_DAILY_CAP = 5
 DEFAULT_TIME_SLOTS = ("02:00", "07:00", "13:00", "15:30")  # UTC HH:MM
 DEFAULT_ACTIVE_SLOT_COUNT = 3
+
+
+class ConfigError(ValueError):
+    """Invalid configuration. Messages name the setting only and NEVER contain env values."""
 
 
 def _default_weights() -> dict[str, float]:
@@ -19,9 +24,9 @@ def _parse_cap(raw: str | None) -> int:
     try:
         cap = int(raw.strip())
     except ValueError:
-        raise ValueError(f"DAILY_CAP must be a positive integer, got {raw!r}") from None
+        raise ConfigError("DAILY_CAP must be a positive integer") from None
     if cap <= 0:
-        raise ValueError(f"DAILY_CAP must be a positive integer, got {raw!r}")
+        raise ConfigError("DAILY_CAP must be a positive integer")
     return cap
 
 
@@ -33,7 +38,7 @@ def _parse_slots(raw: str | None) -> tuple[str, ...]:
     try:
         return tuple(validate_options("time_slot", slots))
     except ValueError:
-        raise ValueError(f"TIME_SLOTS must be comma-separated UTC HH:MM, got {raw!r}") from None
+        raise ConfigError("TIME_SLOTS must be comma-separated UTC HH:MM") from None
 
 
 def _parse_active_count(raw: str | None) -> int:
@@ -42,9 +47,21 @@ def _parse_active_count(raw: str | None) -> int:
     try:
         n = int(raw.strip())
     except ValueError:
-        raise ValueError(f"ACTIVE_SLOT_COUNT must be a positive integer, got {raw!r}") from None
+        raise ConfigError("ACTIVE_SLOT_COUNT must be a positive integer") from None
     if n <= 0:
-        raise ValueError(f"ACTIVE_SLOT_COUNT must be a positive integer, got {raw!r}")
+        raise ConfigError("ACTIVE_SLOT_COUNT must be a positive integer")
+    return n
+
+
+def _parse_per_run_cap(raw: str | None) -> int | None:
+    if raw is None or not raw.strip():
+        return None  # derived: ceil(daily_cap / active_slot_count)
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        raise ConfigError("PER_RUN_CAP must be a positive integer") from None
+    if n <= 0:
+        raise ConfigError("PER_RUN_CAP must be a positive integer")
     return n
 
 
@@ -69,12 +86,20 @@ class Settings:
     brand_name: str = "Telangana News"
     time_slots: tuple[str, ...] = DEFAULT_TIME_SLOTS
     active_slot_count: int = DEFAULT_ACTIVE_SLOT_COUNT
+    per_run_cap: int | None = None
+
+    @property
+    def effective_per_run_cap(self) -> int:
+        """Most posts/drafts one run may create: PER_RUN_CAP, else ceil(daily_cap / active slots)."""
+        if self.per_run_cap is not None:
+            return self.per_run_cap
+        return max(1, math.ceil(self.daily_cap / max(1, self.active_slot_count)))
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Settings":
         mode = env.get("MODE", "review").strip().lower() or "review"
         if mode not in VALID_MODES:
-            raise ValueError(f"MODE must be one of {VALID_MODES}, got {mode!r}")
+            raise ConfigError(f"MODE must be one of {VALID_MODES}")
         return cls(
             mode=mode,
             daily_cap=_parse_cap(env.get("DAILY_CAP")),
@@ -82,4 +107,5 @@ class Settings:
             brand_name=(env.get("BRAND_NAME") or "").strip() or "Telangana News",
             time_slots=_parse_slots(env.get("TIME_SLOTS")),
             active_slot_count=_parse_active_count(env.get("ACTIVE_SLOT_COUNT")),
+            per_run_cap=_parse_per_run_cap(env.get("PER_RUN_CAP")),
         )

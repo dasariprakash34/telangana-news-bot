@@ -133,3 +133,20 @@ def test_malformed_feed_logs_warning(caplog):
         r.levelname == "WARNING" and "BadFeed" in r.getMessage() and "https://bad.example/rss" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_fetch_stories_reports_source_failures():
+    from tgnews.fetch import FetchReport, fetch_stories
+
+    class Bad:
+        def fetch(self):
+            raise RuntimeError("down")
+
+    class Empty:
+        def fetch(self):
+            return []
+
+    rep = FetchReport()
+    assert fetch_stories([Bad(), Empty(), Bad()], report=rep) == []
+    assert (rep.sources, rep.failed) == (3, 2)
+    assert fetch_stories([]) == []  # existing signature still works

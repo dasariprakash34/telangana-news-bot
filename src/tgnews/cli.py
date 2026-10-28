@@ -13,8 +13,8 @@ import anthropic
 from sqlalchemy import create_engine
 
 from . import analyze, db, learn, pipeline, publish, report
-from .config import Settings
-from .fetch import fetch_stories, load_sources
+from .config import ConfigError, Settings
+from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
 from .instagram import InstagramClient
 from .pipeline import Deps, PipelineError
@@ -24,7 +24,9 @@ from .storage import StorageConfig, upload
 
 DEFAULT_SOURCES = "config/sources.yaml"
 _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
-_SHOWN = pipeline._SAFE_MESSAGE + (PipelineError, BlocklistError, ShapingUnavailable, ValueError)
+# Only our own error types have messages known to be free of env values; everything else is
+# shown as its type name (and then scrubbed).
+_SHOWN = pipeline._SAFE_MESSAGE + (PipelineError, BlocklistError, ShapingUnavailable, ConfigError)
 _NEEDS_LLM = {"run", "dry-run", "report"}
 _NEEDS_IG = {"publish", "analyze", "refresh-token"}
 
@@ -40,8 +42,11 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     llm = anthropic.Anthropic(api_key=need("ANTHROPIC_API_KEY")) if purpose in _NEEDS_LLM else None
     engine = None
     if purpose != "dry-run":
-        engine = create_engine(settings.database_url)
-        db.init(engine)
+        try:
+            engine = create_engine(settings.database_url)
+            db.init(engine)
+        except Exception:  # URL parsing / driver errors can echo parts of the password
+            raise PipelineError("DATABASE_URL is invalid or the database is unreachable") from None
     ig = None
     if purpose in _NEEDS_IG or (purpose == "run" and settings.mode == "auto"):
         ig = InstagramClient.from_env(env, engine)
@@ -53,8 +58,9 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
         cfg = StorageConfig.from_env(env)
         up = lambda paths, prefix: upload(paths, prefix, config=cfg)  # noqa: E731
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
-    return Deps(fetch=lambda: fetch_stories(sources), llm=llm, engine=engine, upload=up,
-                instagram=ig, telegram=tg,
+    report = FetchReport()
+    return Deps(fetch=lambda: fetch_stories(sources, report=report), fetch_report=report,
+                llm=llm, engine=engine, upload=up, instagram=ig, telegram=tg,
                 out_dir=Path(env.get("OUT_DIR") or tempfile.mkdtemp(prefix="tgnews-")))
 
 
@@ -102,6 +108,9 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         print(_fmt(summary))
         for e in summary.errors:
             print(f"error: {e}", file=sys.stderr)
+        if summary.fetch_alert:  # exit stays 0: nothing is broken that a retry would fix
+            print(f"warning: {summary.fetch_alert}", file=sys.stderr)
+            _alert(deps.telegram, f"tgnews: {summary.fetch_alert}")
     elif cmd == "dry-run":
         summary = pipeline.dry_run(settings, deps, args.out)
         print(_fmt(summary))

@@ -12,6 +12,9 @@ from sqlalchemy.pool import StaticPool
 
 from tgnews import db, pipeline
 from tgnews.config import Settings
+from tgnews.fetch import FetchReport
+from tgnews.rewrite import RewriteFailed
+from tgnews.storage import StorageError
 from tgnews.gate import TelegramError
 from tgnews.instagram import InstagramError
 from tgnews.models import PostState, Story
@@ -64,7 +67,9 @@ class FakeIG:
         self.calls.append(("POST", path))
         if path.endswith("/media_publish"):
             return {"id": "MEDIA1"}
-        if self.fail_create:
+        if self.fail_create and getattr(self, "fail_times", None) != 0:
+            if getattr(self, "fail_times", None):
+                self.fail_times -= 1
             raise self.fail_create if isinstance(self.fail_create, Exception) else InstagramError("create failed")
         self.created.append(p)
         self.n += 1
@@ -224,10 +229,11 @@ def test_telegram_failure_marks_post_failed(engine, tmp_path):
 
 def test_auto_publish_failure_leaves_post_failed_and_run_continues(engine, tmp_path):
     ig = FakeIG(fail_create=True)
+    ig.fail_times = 1  # only the first container creation fails
     summary = run_once(settings(mode="auto"), make_deps(engine, tmp_path, [story(1), story(2)], ig=ig))
-    assert summary.published == 0 and summary.failed == 2
-    assert {p.state for p in all_posts(engine)} == {PostState.failed}
-    assert not any(c[1].endswith("/media_publish") for c in ig.calls)
+    assert (summary.published, summary.failed) == (1, 1)
+    assert sorted(p.state.value for p in all_posts(engine)) == ["failed", "published"]
+    assert len([c for c in ig.calls if c[1].endswith("/media_publish")]) == 1
 
 
 def test_block_story_never_saved_or_posted(engine, tmp_path):
@@ -483,3 +489,107 @@ def test_publish_approved_order_token_poll_expire_reconcile(engine, tmp_path, mo
     monkeypatch.setattr(pipeline.publish, "reconcile_publishing", lambda *a, **k: order.append("reconcile") or [])
     publish_approved(settings(), make_deps(engine, tmp_path, [], ig=FakeIG(), tg=PollTG()))
     assert order == ["token", "poll", "expire", "reconcile"]
+
+
+def test_per_run_cap_stops_run_before_daily_cap(engine, tmp_path):
+    deps = make_deps(engine, tmp_path, [story(i) for i in range(1, 6)], tg=FakeTG())
+    summary = run_once(settings(daily_cap=10, per_run_cap=2), deps)
+    assert summary.drafted == 2 and summary.per_run_cap_reached is True and summary.cap_reached is False
+
+
+def test_per_run_cap_defaults_to_ceil_daily_over_active_slots():
+    assert Settings(daily_cap=5, active_slot_count=3).effective_per_run_cap == 2
+    assert Settings(daily_cap=2, active_slot_count=3).effective_per_run_cap == 1
+    assert Settings(daily_cap=9, active_slot_count=3, per_run_cap=7).effective_per_run_cap == 7
+    assert Settings.from_env({"PER_RUN_CAP": "4"}).per_run_cap == 4
+    with pytest.raises(ValueError):
+        Settings.from_env({"PER_RUN_CAP": "0"})
+
+
+def failing_upload(paths, prefix):
+    raise StorageError("upload failed")
+
+
+def test_two_consecutive_storage_failures_abort_and_leave_rest_unclaimed(engine, tmp_path):
+    deps = make_deps(engine, tmp_path, [story(1), story(2), story(3)], tg=FakeTG(), upload=failing_upload)
+    with pytest.raises(pipeline.PipelineError, match="infrastructure"):
+        run_once(settings(per_run_cap=10), deps)
+    # the failed stories had no post, so their claims were released too: all three can be retried
+    assert not any(db.story_seen(engine, f"https://example.com/{n}") for n in (1, 2, 3))
+    assert all_posts(engine) == []
+
+
+def test_single_storage_failure_releases_claim_and_run_continues(engine, tmp_path):
+    n = {"calls": 0}
+
+    def flaky(paths, prefix):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            raise StorageError("upload failed")
+        return [f"https://cdn.example.com/{prefix}/{p.name}" for p in paths]
+
+    deps = make_deps(engine, tmp_path, [story(1), story(2)], tg=FakeTG(), upload=flaky)
+    summary = run_once(settings(per_run_cap=10), deps)
+    assert (summary.failed, summary.drafted) == (1, 1)
+    seen = [db.story_seen(engine, f"https://example.com/{i}") for i in (1, 2)]
+    assert sorted(seen) == [False, True]  # the failed one is retryable, the posted one is not
+
+
+def test_rewrite_failures_do_not_count_as_infrastructure_failures(engine, tmp_path):
+    stories = [story(i, title=t) for i, t in
+               ((1, "BROKEN metro rail delays"), (2, "BROKEN farm loan waiver"), (3, "BROKEN cricket final"))] + [story(4)]
+    deps = make_deps(engine, tmp_path, stories, llm=FakeLLM(bad_titles=["BROKEN"]), tg=FakeTG())
+    summary = run_once(settings(per_run_cap=10), deps)
+    assert summary.failed == 3 and summary.drafted == 1
+
+
+def test_infra_failure_resets_after_success(engine, tmp_path):
+    calls = {"n": 0}
+
+    def alternating(paths, prefix):
+        calls["n"] += 1
+        if calls["n"] % 2 == 1:
+            raise StorageError("upload failed")
+        return [f"https://cdn.example.com/{prefix}/{p.name}" for p in paths]
+
+    deps = make_deps(engine, tmp_path, [story(i) for i in (1, 2, 3, 4)], tg=FakeTG(), upload=alternating)
+    summary = run_once(settings(per_run_cap=10, daily_cap=10), deps)
+    assert summary.failed == 2 and summary.drafted == 2
+
+
+def test_failed_story_with_a_post_row_keeps_its_claim(engine, tmp_path):
+    class BadTG(FakeTG):
+        def call(self, method, **p):
+            raise TelegramError("sendMessage failed")
+
+    summary = run_once(settings(per_run_cap=10), make_deps(engine, tmp_path, [story(1)], tg=BadTG()))
+    assert summary.failed == 1 and db.story_seen(engine, "https://example.com/1")
+
+
+def test_empty_fetch_sets_alert_text(engine, tmp_path):
+    cases = [(FetchReport(sources=0), "no sources configured"),
+             (FetchReport(sources=2, failed=2), "all sources failed"),
+             (FetchReport(sources=2, failed=1), "no stories fetched"),
+             (None, "no stories fetched")]
+    for report, text in cases:
+        deps = make_deps(engine, tmp_path, [], tg=FakeTG(), fetch_report=report)
+        assert run_once(settings(), deps).fetch_alert == text
+    ok = run_once(settings(), make_deps(engine, tmp_path, [story(1)], tg=FakeTG()))
+    assert ok.fetch_alert is None
+
+
+def test_compose_caption_respects_instagram_limit():
+    from tgnews.rewrite import RewrittenPost
+    base = dict(headline_te="h", points_te=["a", "b"], source_credit="X", topic="other",
+                headline_style="statement")
+    tags = [f"#tag{i:02d}" for i in range(10)]
+    body = "అ" * 2150
+    out = pipeline.compose_caption(RewrittenPost(caption_te=body, hashtags=tags, **base))
+    assert len(out) <= 2200 and out.startswith(body) and out.endswith("#tag" + out[-2:])
+    assert out.split("\n\n")[1].split() == tags[:len(out.split("\n\n")[1].split())]  # trailing dropped
+    full = pipeline.compose_caption(RewrittenPost(caption_te="అ" * 100, hashtags=tags, **base))
+    assert full.split("\n\n")[1].split() == tags
+    exact = pipeline.compose_caption(RewrittenPost(caption_te="అ" * 2200, hashtags=tags, **base))
+    assert exact == "అ" * 2200
+    with pytest.raises(RewriteFailed):
+        pipeline.compose_caption(RewrittenPost(caption_te="అ" * 2201, hashtags=tags, **base))

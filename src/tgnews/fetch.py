@@ -130,17 +130,32 @@ def _matches(story: Story, keywords: Iterable[str]) -> bool:
     return any(k.casefold() in text for k in keywords)
 
 
+@dataclass
+class FetchReport:
+    """How many sources were tried and how many raised."""
+    sources: int = 0
+    failed: int = 0
+
+
 def fetch_stories(
-    sources: Iterable[NewsSource], keywords: Iterable[str] = TELANGANA_KEYWORDS
+    sources: Iterable[NewsSource], keywords: Iterable[str] = TELANGANA_KEYWORDS,
+    report: FetchReport | None = None,
 ) -> list[Story]:
+    """Fetch and filter stories. Pass a FetchReport to learn how many sources failed."""
     keywords = tuple(keywords)
     out: list[Story] = []
     seen: set[str] = set()
+    if report is not None:
+        report.sources = report.failed = 0
     for src in sources:
+        if report is not None:
+            report.sources += 1
         try:
             stories = src.fetch()
         except Exception:
             log.exception("news source failed: %r", src)
+            if report is not None:
+                report.failed += 1
             continue
         for s in stories:
             if s.id in seen or not _matches(s, keywords):
