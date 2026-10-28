@@ -172,7 +172,8 @@ def claim_post(engine: Engine, post_id: int, now: datetime | None = None) -> boo
         res = conn.execute(update(posts).where(
             posts.c.id == post_id,
             posts.c.state.in_([PostState.draft.value, PostState.approved.value]),
-        ).values(state=PostState.publishing.value, claimed_at=claimed, updated_at=_now()))
+        ).values(state=PostState.publishing.value, claimed_at=claimed, updated_at=_now(),
+                  container_id=None, posted_at=None))  # drop a previous attempt's leftovers
         return res.rowcount == 1
 
 

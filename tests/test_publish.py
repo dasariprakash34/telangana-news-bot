@@ -541,3 +541,34 @@ def test_refresh_token_rejects_malformed_response(engine):
     with pytest.raises(InstagramError):
         refresh_token(c, engine, NOW)
     assert db.get_kv(engine, "ig_access_token") is None
+
+
+def test_requeued_post_with_old_container_is_not_failed_by_concurrent_reconcile(engine):
+    pid = new_post(engine)
+    db.set_post_container(engine, pid, "OLD-CONTAINER")
+    db.update_post_state(engine, pid, PostState.failed)
+    db.update_post_state(engine, pid, PostState.approved)  # human requeue
+    assert db.claim_post(engine, pid) is True
+    assert db.get_post(engine, pid).container_id is None  # stale container dropped by the claim
+
+    seen = {}
+
+    class RacingClient(FakeClient):
+        def post(self, path, **params):
+            if path.endswith("/media") and "reconciled" not in seen:
+                # reconcile runs after the claim, before the new container is stored
+                rec = FakeClient(engine, statuses=["ig_status_expired.json"], recent={"data": []})
+                seen["reconciled"] = reconcile_publishing(engine, rec, datetime.now(timezone.utc))
+                seen["state"] = db.get_post(engine, pid).state
+                seen["rec_calls"] = rec.calls
+            return super().post(path, **params)
+
+    # publish_post must claim itself, so requeue again for the full-flow run
+    db.update_post_state(engine, pid, PostState.approved)
+    c = RacingClient(engine)
+    run(engine, pid, [URL1], c)
+    assert seen["reconciled"] == [] and seen["state"] == PostState.publishing
+    assert seen["rec_calls"] == [] or all(m == "GET" for m, _, _ in seen["rec_calls"])
+    assert not any(p.endswith("/media_publish") for _, p, _ in seen["rec_calls"])
+    assert db.get_post(engine, pid).state == PostState.published
+    assert len(c.publish_calls()) == 1
