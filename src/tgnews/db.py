@@ -269,3 +269,37 @@ def set_post_metrics(engine: Engine, post_id: int, metrics: dict) -> bool:
         res = conn.execute(update(posts).where(posts.c.id == post_id, posts.c.metrics.is_(None))
                            .values(metrics=metrics))
         return res.rowcount == 1
+
+
+def scored_posts(engine: Engine) -> list[dict]:
+    """Posts whose metrics carry a numeric score (incomplete posts are ignored)."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(posts).where(posts.c.metrics.is_not(None))
+                            .order_by(posts.c.id)).all()
+    out: list[dict] = []
+    for r in rows:
+        m = r.metrics
+        score = m.get("score") if isinstance(m, dict) else None
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        out.append({"id": r.id, "topic": r.topic, "format": r.format, "time_slot": r.time_slot,
+                    "headline_style": r.headline_style, "score": float(score),
+                    "posted_at": _utc(r.posted_at)})
+    return out
+
+
+def replace_learning(engine: Engine, rows: list[tuple[str, str, float, int]]) -> None:
+    """Atomically replace the whole learning table with (dimension, key, mean score, n) rows."""
+    stamp = _now()
+    with engine.begin() as conn:
+        conn.execute(learning.delete())
+        if rows:
+            conn.execute(insert(learning), [
+                {"dimension": d, "key": k, "score": s, "n": n, "updated_at": stamp}
+                for d, k, s, n in rows])
+
+
+def get_learning(engine: Engine, dimension: str) -> dict[str, tuple[float, int]]:
+    with engine.connect() as conn:
+        rows = conn.execute(select(learning).where(learning.c.dimension == dimension)).all()
+    return {r.key: (r.score, r.n) for r in rows}
