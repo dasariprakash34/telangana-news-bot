@@ -114,3 +114,22 @@ def test_load_sources_missing_or_empty(tmp_path):
     empty.write_text("", encoding="utf-8")
     assert load_sources(empty) == []
     assert load_sources(Path(__file__).parent.parent / "config" / "sources.yaml") == []
+
+
+def test_undated_entry_skipped():
+    stories = _source("undated_feed.xml").fetch()
+    assert [s.url for s in stories] == ["https://undated.example.com/bridge"]
+
+
+def test_malformed_feed_logs_warning(caplog):
+    src = RssSource(
+        url="https://bad.example/rss",
+        name="BadFeed",
+        fetch_text=lambda: "<html><body><h1>502 Bad Gateway</h1><p>oops</body>",
+    )
+    with caplog.at_level("WARNING", logger="tgnews.fetch"):
+        assert src.fetch() == []
+    assert any(
+        r.levelname == "WARNING" and "BadFeed" in r.getMessage() and "https://bad.example/rss" in r.getMessage()
+        for r in caplog.records
+    )

@@ -74,11 +74,11 @@ def _story_id(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()
 
 
-def _entry_time(entry) -> datetime:
+def _entry_time(entry) -> datetime | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if parsed:
         return datetime.fromtimestamp(timegm(parsed), tz=timezone.utc)
-    return datetime.now(timezone.utc)
+    return None
 
 
 @dataclass
@@ -97,11 +97,18 @@ class RssSource:
 
     def fetch(self) -> list[Story]:
         feed = feedparser.parse(self._download())
+        if feed.get("bozo") and not feed.entries:
+            log.warning("feed %s (%s) returned no entries and was malformed: %r",
+                        self.name, self.url, feed.get("bozo_exception"))
         stories: list[Story] = []
         for entry in feed.entries:
             url = (entry.get("link") or "").strip()
             title = _clean(entry.get("title", ""))
             if not url or not title:
+                continue
+            published_at = _entry_time(entry)
+            if published_at is None:
+                log.info("skipping undated entry from %s: %s", self.name, url)
                 continue
             summary = _clean(entry.get("summary", ""))
             stories.append(
@@ -111,7 +118,7 @@ class RssSource:
                     summary=summary,
                     url=url,
                     source_name=self.name,
-                    published_at=_entry_time(entry),
+                    published_at=published_at,
                     topic_hint=assign_topic_hint(title, summary),
                 )
             )

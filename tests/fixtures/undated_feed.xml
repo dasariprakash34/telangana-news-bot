@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Undated</title>
+    <link>https://undated.example.com/</link>
+    <description>Feed with an undated item</description>
+    <item>
+      <title>Hyderabad metro expansion approved</title>
+      <link>https://undated.example.com/metro-undated</link>
+      <description>No publication date on this item.</description>
+    </item>
+    <item>
+      <title>Karimnagar bridge opens</title>
+      <link>https://undated.example.com/bridge</link>
+      <description>Dated item.</description>
+      <pubDate>Tue, 27 Oct 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
