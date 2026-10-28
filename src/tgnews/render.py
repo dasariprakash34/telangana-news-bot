@@ -218,17 +218,17 @@ def _frame(theme: Theme, brand: str, topic: str, index: int = 0, total: int = 1)
     brand_lines = _truncate_to_fit(draw, brand, bfont, brand_max, 1) if _width(draw, brand, bfont) > brand_max else [brand]
     draw.text((MARGIN, MARGIN), brand_lines[0], font=bfont, fill=theme.text)
     cx = WIDTH - MARGIN - chip_w
-    draw.rounded_rectangle([cx, MARGIN, cx + chip_w, MARGIN + chip_h], radius=chip_h // 2, fill=theme.accent)
+    draw.rounded_rectangle([cx, MARGIN, cx + chip_w - 1, MARGIN + chip_h], radius=chip_h // 2, fill=theme.accent)
     draw.text((cx + 24, MARGIN - 6 + (chip_h - 30 * 1.55) / 2 + 6), label, font=chip_font, fill=theme.bg_bottom)
     top = MARGIN + max(chip_h, bfont_h) + 56
     # Bottom: progress segments (carousel position) or a short accent bar (single card).
-    bar_y = HEIGHT - MARGIN - 10  # inside the margin box
+    bar_y = HEIGHT - MARGIN - 20  # inside the margin box
     if total > 1:
         gap, seg_h = 12, 8
         seg_w = (inner_w - gap * (total - 1)) // total
         for i in range(total):
             x0 = MARGIN + i * (seg_w + gap)
-            draw.rounded_rectangle([x0, bar_y, x0 + seg_w, bar_y + seg_h], radius=4,
+            draw.rounded_rectangle([x0, bar_y, x0 + seg_w - 1, bar_y + seg_h], radius=4,
                                    fill=theme.accent if i <= index else theme.muted)
     else:
         draw.rounded_rectangle([MARGIN, bar_y, MARGIN + 160, bar_y + 8], radius=4, fill=theme.accent)
