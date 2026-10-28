@@ -134,3 +134,17 @@ def test_custom_blocklist_prefix_syntax(tmp_path):
     assert check(_story("Flooding in city"), "auto", blocklist_path=p) is Verdict.HOLD
     assert check(_story("Storms expected"), "auto", blocklist_path=p) is Verdict.ALLOW
     assert check(_story("A storm"), "auto", blocklist_path=p) is Verdict.HOLD
+
+
+def test_telugu_sexual_harassment_of_minor_and_church_terms():
+    from datetime import datetime, timezone
+    from tgnews import safety
+    from tgnews.models import Story
+
+    def mk(title):
+        return Story(id="t", title=title, summary="", url="https://e.com/1", source_name="T",
+                     published_at=datetime.now(timezone.utc), topic_hint=None)
+
+    assert safety.check(mk("మైనర్ బాలికపై లైంగిక వేధింపులు"), "review").name == "BLOCK"
+    assert safety.check(mk("చర్చి వద్ద వివాదం"), "auto").name == "HOLD"
+    assert safety.check(mk("తెలంగాణ ఐటీ ఎగుమతులు రికార్డు"), "auto").name == "ALLOW"

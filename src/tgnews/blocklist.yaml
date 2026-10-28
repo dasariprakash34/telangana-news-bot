@@ -64,6 +64,10 @@ groups:
       - juvenile accused
       - juvenile offender*
       - అత్యాచార
+      - లైంగిక వేధింపు
+      - లైంగిక దాడి
+      - మైనర్ బాలిక
+      - మైనర్ బాలుడు
 
   death_rumours:
     verdict: block
@@ -151,6 +155,7 @@ groups:
       - procession*
       - ఆలయ
       - మసీద
+      - చర్చి
 
   health_claims:
     verdict: hold
