@@ -213,13 +213,18 @@ def test_tgnews_line_validator_rejects_extra_tokens():
 
 IG_ENV = {"IG_ACCESS_TOKEN", "IG_USER_ID", "IG_API_VERSION"}
 STORAGE_ENV = {"STORAGE_ENDPOINT", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY",
-               "STORAGE_BUCKET", "STORAGE_PUBLIC_BASE"}
+               "STORAGE_BUCKET", "STORAGE_PUBLIC_BASE"}  # s3 backend only; mapped but may be unset
+GITHUB_IMAGES_ENV = {"STORAGE_PROVIDER", "IMAGES_GH_TOKEN", "IMAGES_GH_REPO", "IMAGES_GH_BRANCH",
+                     "IMAGES_PUBLIC_BASE"}
+PRUNE_ENV = {"STORAGE_PROVIDER", "IMAGES_GH_TOKEN", "IMAGES_GH_REPO", "IMAGES_GH_BRANCH", "IMAGES_KEEP_DAYS"}
 
 
 def required_env(cmd: str) -> set[str]:
     """Required env names per subcommand, derived from cli.py's own _NEEDS_* sets plus the
     unconditional requirements in build_deps (DATABASE_URL for everything but dry-run;
-    storage for `run`). Telegram is optional in the code, but the workflows must pass it."""
+    storage for `run`; prune-images needs only the images repo). Telegram is optional in the code, but the workflows must pass it."""
+    if cmd == "prune-images":  # no database, LLM or Instagram: only the images repo (and Telegram alerts)
+        return PRUNE_ENV | {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
     need = {"DATABASE_URL"} if cmd != "dry-run" else set()
     if cmd in cli._NEEDS_LLM:
         # build_llm reads the key of whichever provider is selected, so a step must pass both
@@ -228,7 +233,7 @@ def required_env(cmd: str) -> set[str]:
     if cmd in cli._NEEDS_IG:
         need |= IG_ENV
     if cmd == "run":
-        need |= STORAGE_ENV | IG_ENV  # IG is needed whenever MODE=auto, and the workflow must support it
+        need |= STORAGE_ENV | GITHUB_IMAGES_ENV | IG_ENV  # IG is needed whenever MODE=auto, and the workflow must support it
     if cmd == "publish-approved":
         need |= IG_ENV  # purpose name is "publish" in build_deps
     return need | {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
@@ -248,7 +253,7 @@ def test_every_step_passes_the_env_its_subcommand_needs():
                 missing = required_env(cmd) - set(step.get("env") or {})
                 assert not missing, f"{path.name}: `{line}` is missing env {sorted(missing)}"
                 checked.add(cmd)
-    assert {"run", "publish-approved", "analyze", "report", "refresh-token"} <= checked
+    assert {"run", "publish-approved", "analyze", "report", "refresh-token", "prune-images"} <= checked
 
 
 def test_dropping_storage_from_run_step_would_fail():
@@ -286,3 +291,45 @@ def test_anthropic_is_an_optional_extra_not_a_dependency():
     proj = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     assert not any(d.lower().startswith("anthropic") for d in proj["dependencies"])
     assert proj["optional-dependencies"]["anthropic"] == ["anthropic"]
+
+
+def test_image_storage_env_only_where_needed():
+    images = (GITHUB_IMAGES_ENV | STORAGE_ENV | {"IMAGES_KEEP_DAYS"}) - {"TELEGRAM_BOT_TOKEN"}
+    for path in WORKFLOWS:
+        for job in load(path)["jobs"].values():
+            for step in job["steps"]:
+                line = step.get("run", "").strip()
+                if line.startswith("tgnews "):
+                    has = images & set(step.get("env") or {})
+                    assert bool(has) == (line.split()[1] in {"run", "prune-images"}), f"{path.name}: {line}"
+    assert not STORAGE_ENV & required_env("prune-images")
+
+
+def test_images_secret_and_variable_mapping():
+    seen = set()
+    for path in WORKFLOWS:
+        for name, value in env_values(load(path)):
+            if name == "IMAGES_GH_TOKEN":
+                assert str(value) == "${{ secrets.IMAGES_GH_TOKEN }}"  # never GITHUB_*-named
+            if name in ("STORAGE_PROVIDER", "IMAGES_GH_REPO", "IMAGES_GH_BRANCH", "IMAGES_PUBLIC_BASE",
+                        "IMAGES_KEEP_DAYS"):
+                assert str(value).startswith("${{ vars."), (path.name, name)
+            if name.startswith(("STORAGE_E", "STORAGE_A", "STORAGE_S", "STORAGE_B")):
+                assert str(value).startswith("${{ secrets."), (path.name, name)
+            seen.add((path.name, name))
+    assert ("analyze.yml", "IMAGES_KEEP_DAYS") in seen and ("post.yml", "IMAGES_GH_TOKEN") in seen
+    for path in WORKFLOWS:
+        for name, _ in env_values(load(path)):
+            assert not name.startswith("GITHUB_"), name
+
+
+def test_analyze_prunes_images_after_analysis_even_if_it_failed():
+    steps = next(iter(load(WF_DIR / "analyze.yml")["jobs"].values()))["steps"]
+    cmds = [st.get("run", "").strip() for st in steps]
+    assert cmds.index("tgnews prune-images") > cmds.index("tgnews analyze")
+    prune = steps[cmds.index("tgnews prune-images")]
+    assert prune["if"] == "${{ !cancelled() }}"
+
+
+def test_prune_images_and_check_images_are_subcommands():
+    assert {"prune-images", "check-images"} <= subcommands()

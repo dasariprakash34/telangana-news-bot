@@ -51,15 +51,23 @@ Notes:
 3. Use a **private chat** only. Anyone in the configured chat can approve posts. Updates from other chats are ignored.
 4. Do not set a webhook on this bot; the program reads decisions by polling `getUpdates` *(from general Telegram API knowledge, unverified here)*.
 
-### 4. Create image storage
+### 4. Create image storage (free: a public GitHub repo)
 
-Instagram needs a public HTTPS URL for each image. Create an S3-compatible bucket (any provider) with:
+Instagram needs a public HTTPS URL for each image. The default backend (`STORAGE_PROVIDER=github`) costs nothing: the program commits each JPEG into a **separate public GitHub repo** (the "images repo") through GitHub's Contents API and serves it from a public URL.
 
-- public read access for the image prefix (the program uploads JPEGs only and the URLs must be reachable without credentials),
-- a public base URL that serves the bucket (`STORAGE_PUBLIC_BASE`, must start with `https://`),
-- an access key with write access.
+1. Create a new **public** repository for images only (for example `your-user/tgnews-images`) with a `main` branch (initialise it with a README so the branch exists). It must be public: Instagram's servers fetch the images without credentials.
+2. Create a **fine-grained personal access token** limited to **that one repository** with **Contents: read and write**. Check GitHub's current UI for the exact menu path. Set an expiry you will remember to renew.
+3. Repository secret `IMAGES_GH_TOKEN` (the name must not start with `GITHUB_`; GitHub forbids Actions secret names that do) and repository variable `IMAGES_GH_REPO` (`owner/name`). Optional variables: `IMAGES_GH_BRANCH` (default `main`), `IMAGES_PUBLIC_BASE`, `IMAGES_KEEP_DAYS`, `STORAGE_PROVIDER` (`github` if unset).
 
-Values: `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, optional `STORAGE_REGION` (default `auto`).
+Images are committed as `posts/YYYYMMDD/<story>-<random>-<n>.jpg`. The path is unique per post; if GitHub reports that a file already exists the upload fails rather than overwriting it. Uploads are sequential with a one-second pause, to stay clear of GitHub's secondary rate limits.
+
+**Which URL Instagram fetches.** By default `https://raw.githubusercontent.com/OWNER/REPO/BRANCH/posts/...`. If Instagram rejects that host, set `IMAGES_PUBLIC_BASE` to a CDN style base such as `https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH` (https only). **Instagram accepting either URL form is UNVERIFIED. Test with the throwaway account first.** You can check that a URL is publicly fetchable (HTTP 200 and `image/jpeg`) with `tgnews check-images https://...`; it uploads nothing. That proves the URL works for you, not that Instagram's fetcher accepts it; only a real test post shows that. CDNs may also cache a path for a while, which is harmless here because paths are never reused.
+
+**Pruning.** `analyze.yml` also runs `tgnews prune-images` daily. It deletes files in `posts/YYYYMMDD/` directories older than `IMAGES_KEEP_DAYS` days (default 14, at most 60 files per run, anything outside `posts/` untouched) so the repo does not grow forever. Pruning is by date only and does not look at post state, so the default is deliberately much longer than the 6-hour draft expiry and the 48-hour story age; do not set it below 3.
+
+**Everything in a public repo is public**: the images, and also this code repo's `blocklist.yaml` and `config/sources.yaml` if you make the code repo public. Never commit secrets. A public *code* repo is also what makes Actions free: GitHub's docs say standard runners are free for public repositories (check the current docs; private repos have a monthly minutes quota). Review the blocklist and sources with that in mind before publishing the repo.
+
+**Optional advanced backend: S3-compatible bucket** (`STORAGE_PROVIDER=s3`; some providers need a payment method). Create a bucket with public read access for the image prefix, a public base URL that serves it (`STORAGE_PUBLIC_BASE`, must start with `https://`) and an access key with write access. Secrets: `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, optional `STORAGE_REGION` (default `auto`). These are ignored with the github provider. S3 images are not pruned by this program.
 
 ### 5. Create a hosted Postgres database
 
@@ -87,11 +95,11 @@ In the GitHub repository settings (check GitHub's current docs for where Actions
 
 Repository **secrets**:
 
-`GEMINI_API_KEY`, `ANTHROPIC_API_KEY` (only if you use the anthropic provider; may be left unset or empty), `DATABASE_URL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_API_VERSION`, `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, `STORAGE_REGION`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+`GEMINI_API_KEY`, `ANTHROPIC_API_KEY` (only if you use the anthropic provider; may be left unset or empty), `DATABASE_URL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_API_VERSION`, `IMAGES_GH_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
-(`STORAGE_REGION` may be an empty secret; the default is `auto`.)
+The s3-only secrets (`STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, `STORAGE_REGION`) are needed only with `STORAGE_PROVIDER=s3` and may be left unset.
 
-Repository **variables** (not secret): `LLM_PROVIDER` (`gemini` if unset, or `anthropic`), `LLM_MODEL` (required for gemini: the model id copied from Google AI Studio), `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`, `PER_RUN_CAP` (most posts or drafts one run may create; default `ceil(DAILY_CAP / ACTIVE_SLOT_COUNT)`, so a single run cannot burst the whole day's allowance). Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed: error messages shown or sent to Telegram are limited to this project's own sanitized messages (anything else is reduced to its error type), and any secret value found in them is replaced with `[REDACTED]`. An invalid `DATABASE_URL` is reported only as "invalid or unreachable".
+Repository **variables** (not secret): `STORAGE_PROVIDER`, `IMAGES_GH_REPO`, `IMAGES_GH_BRANCH`, `IMAGES_PUBLIC_BASE`, `IMAGES_KEEP_DAYS` (see step 4), `LLM_PROVIDER` (`gemini` if unset, or `anthropic`), `LLM_MODEL` (required for gemini: the model id copied from Google AI Studio), `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`, `PER_RUN_CAP` (most posts or drafts one run may create; default `ceil(DAILY_CAP / ACTIVE_SLOT_COUNT)`, so a single run cannot burst the whole day's allowance). Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed: error messages shown or sent to Telegram are limited to this project's own sanitized messages (anything else is reduced to its error type), and any secret value found in them is replaced with `[REDACTED]`. An invalid `DATABASE_URL` is reported only as "invalid or unreachable".
 
 If you change `TIME_SLOTS`, also edit the cron times in `.github/workflows/post.yml`, which must match the slots in UTC (a test checks the defaults).
 
@@ -106,7 +114,7 @@ tgnews dry-run --out ./out
 
 This renders images and captions into `./out` with no Instagram, Telegram or storage calls. Open the images and **check the Telugu carefully**: letters must be properly joined (`run` and `dry-run` check this first and stop with a `ShapingUnavailable` error if Pillow lacks raqm; on Linux install `libraqm0 libfribidi0 libharfbuzz0b`). Have a Telugu reader check the text.
 
-Then point all secrets at a **throwaway Instagram test account** (and a test bucket/database), keep `MODE=review`, and trigger **tgnews post** once with `workflow_dispatch`. Approve one draft in Telegram, trigger **tgnews publish approved**, and confirm the post appears.
+Then point all secrets at a **throwaway Instagram test account** (and a test images repo/database), keep `MODE=review`, and trigger **tgnews post** once with `workflow_dispatch`. Approve one draft in Telegram, trigger **tgnews publish approved**, and confirm the post appears.
 
 ### 10. Switch to the real page
 
@@ -120,7 +128,7 @@ All five support manual runs (`workflow_dispatch`) and share one `concurrency` g
 |---|---|---|
 | `post.yml` | 02:00, 07:00, 13:00, 15:30 / 07:30, 12:30, 18:30, 21:00 | `tgnews run` (fetch, dedupe, safety, rewrite, render, upload, then draft to Telegram in review mode or publish in auto mode), then `tgnews publish-approved`. These match the default `TIME_SLOTS`. Each run takes the nearest slot; only the day's active slots post. |
 | `publish-approved.yml` | every 30 min at :15 and :45, 01:15 to 17:45 / 06:45 to 23:15 | `tgnews publish-approved`: reads Telegram taps, then expires untouched drafts (older than 6 hours), then publishes approved posts. Approval behaviour: a tap is read when the next publish run polls Telegram, **before** old drafts are expired, so a tap on a still-pending draft is honoured even if the draft is older than 6 hours. Expiry only removes drafts nobody acted on. Latency: inside the window an approval publishes within about 30 minutes (longer if GitHub delays the run); an evening approval (after 17:45 UTC / 23:15 IST) publishes at the next run, 01:15 UTC (06:45 IST) at the latest. `post.yml` also runs `publish-approved` after each posting run. |
-| `analyze.yml` | daily 20:20 / 01:50 | `tgnews analyze`: pulls insights for posts at least 48 hours old and updates the learning table. |
+| `analyze.yml` | daily 20:20 / 01:50 | `tgnews analyze`: pulls insights for posts at least 48 hours old and updates the learning table. Then `tgnews prune-images`: deletes old images from the GitHub images repo (see step 4). |
 | `report.yml` | Mondays 03:10 / 08:40 | `tgnews report`: writes the weekly report and sends it to Telegram. |
 | `refresh-token.yml` | Sundays 04:40 / 10:10 | `tgnews refresh-token`: refreshes the Instagram token and stores it. |
 

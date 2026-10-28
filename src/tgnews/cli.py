@@ -6,6 +6,7 @@ import dataclasses
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -21,7 +22,8 @@ from .pipeline import Deps, PipelineError
 from .render import ShapingUnavailable
 from .rewrite import DEFAULT_MODEL
 from .safety import BlocklistError
-from .storage import StorageConfig, upload
+from . import storage_github
+from .storage import build_uploader
 
 DEFAULT_SOURCES = "config/sources.yaml"
 _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
@@ -58,8 +60,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
         tg = TelegramClient.from_env(env)
     up = None
     if purpose == "run":
-        cfg = StorageConfig.from_env(env)
-        up = lambda paths, prefix: upload(paths, prefix, config=cfg)  # noqa: E731
+        up = build_uploader(env)
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
     return Deps(fetch=lambda: fetch_stories(sources, report=report), fetch_report=report,
@@ -99,6 +100,9 @@ def _parser() -> argparse.ArgumentParser:
         "--ignore-slots", action="store_true", help="run even if this time slot is not active")
     sub.add_parser("dry-run", help="render to a directory, no network side effects").add_argument(
         "--out", required=True, metavar="DIR")
+    sub.add_parser("prune-images", help="delete old images from the GitHub images repo")
+    sub.add_parser("check-images", help="GET one public image URL and report status and content type"
+                   ).add_argument("url")
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
     return p
@@ -145,6 +149,28 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
     return 0
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _images_command(args, env: Mapping[str, str]) -> int:
+    """Image-hosting housekeeping: needs no database, LLM or Instagram."""
+    if args.command == "check-images":
+        result = storage_github.check_public_url(args.url)
+        print(f"status={result.status} content-type={result.content_type or '(none)'}")
+        if not result.ok:
+            print("error: not a publicly fetchable JPEG (expected HTTP 200 and image/jpeg)", file=sys.stderr)
+        return 0 if result.ok else 1
+    provider = (env.get("STORAGE_PROVIDER") or "").strip().lower() or "github"
+    if provider != "github":
+        print("prune-images: STORAGE_PROVIDER is not github; nothing to do")
+        return 0
+    store = storage_github.GithubImageStore.from_env(env)
+    deleted = store.prune(storage_github.keep_days(env), _now())
+    print(f"deleted={deleted}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None, *,
          deps_builder: Callable[..., Deps] | None = None,
          alert_client: Callable[[Mapping[str, str]], object] | None = None) -> int:
@@ -153,6 +179,20 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         args = _parser().parse_args(argv)
     except SystemExit as exc:  # argparse: --help or bad usage
         return int(exc.code or 0)
+    if args.command in ("prune-images", "check-images"):
+        try:
+            Settings.from_env(env)
+            return _images_command(args, env)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            msg = f"tgnews: error: {_describe(exc, env)}"
+            print(msg, file=sys.stderr)
+            try:
+                _alert((alert_client or _env_telegram)(env), f"{msg} (command: {args.command})")
+            except Exception:
+                pass
+            return 1
     purpose = {"run": "run", "dry-run": "dry-run", "publish-approved": "publish",
                "analyze": "analyze", "report": "report", "refresh-token": "refresh-token"}[args.command]
     deps = None
