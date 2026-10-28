@@ -113,7 +113,8 @@ def test_load_sources_missing_or_empty(tmp_path):
     empty = tmp_path / "e.yaml"
     empty.write_text("", encoding="utf-8")
     assert load_sources(empty) == []
-    assert load_sources(Path(__file__).parent.parent / "config" / "sources.yaml") == []
+    shipped = load_sources(Path(__file__).parent.parent / "config" / "sources.yaml")
+    assert all(src.url.startswith("https://") and src.name for src in shipped)
 
 
 def test_undated_entry_skipped():
