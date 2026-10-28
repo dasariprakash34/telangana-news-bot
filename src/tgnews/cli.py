@@ -200,6 +200,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     try:
         settings = Settings.from_env(env)
         deps = (deps_builder or build_deps)(settings, env, purpose=purpose)
+        args.ignore_slots = bool(getattr(args, "ignore_slots", False)) or (env.get("IGNORE_SLOTS") or "").strip().lower() == "true"
         return _dispatch(args, settings, deps)
     except (KeyboardInterrupt, SystemExit):
         raise
