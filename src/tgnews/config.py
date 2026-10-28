@@ -87,6 +87,8 @@ class Settings:
     time_slots: tuple[str, ...] = DEFAULT_TIME_SLOTS
     active_slot_count: int = DEFAULT_ACTIVE_SLOT_COUNT
     per_run_cap: int | None = None
+    llm_provider: str = "gemini"
+    llm_model: str = ""  # empty: build_llm picks the provider default (gemini has none; required)
 
     @property
     def effective_per_run_cap(self) -> int:
@@ -108,4 +110,6 @@ class Settings:
             time_slots=_parse_slots(env.get("TIME_SLOTS")),
             active_slot_count=_parse_active_count(env.get("ACTIVE_SLOT_COUNT")),
             per_run_cap=_parse_per_run_cap(env.get("PER_RUN_CAP")),
+            llm_provider=(env.get("LLM_PROVIDER") or "").strip().lower() or "gemini",
+            llm_model=(env.get("LLM_MODEL") or "").strip(),
         )

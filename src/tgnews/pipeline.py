@@ -17,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import anthropic
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
@@ -26,10 +25,11 @@ from . import db, gate, learn, publish, safety
 from .config import Settings
 from .dedupe import dedupe
 from .fetch import FetchReport
+from .llm import LLM_AUTH_ERRORS
 from .instagram import InstagramClient, InstagramError
 from .models import PostState, Story
 from .render import ShapingUnavailable, assert_shaping_available, render_card, render_carousel
-from .rewrite import STYLES, TOPICS, RewriteFailed, RewrittenPost, rewrite
+from .rewrite import DEFAULT_MODEL, STYLES, TOPICS, RewriteFailed, RewrittenPost, rewrite
 from .safety import BlocklistError, Verdict
 from .storage import StorageError
 
@@ -41,8 +41,7 @@ NOT_COUNTED = (PostState.rejected, PostState.expired, PostState.failed)
 FORMATS = learn.FORMATS
 MAX_CAPTION_CHARS = 2200  # Instagram caption limit
 MAX_INFRA_FAILURES = 2  # consecutive infrastructure failures before the run stops
-_PROPAGATE = (BlocklistError, ShapingUnavailable, anthropic.AuthenticationError,
-              anthropic.PermissionDeniedError)
+_PROPAGATE = (BlocklistError, ShapingUnavailable) + LLM_AUTH_ERRORS
 _SAFE_MESSAGE = (InstagramError, publish.PublishError, StorageError, gate.TelegramError, RewriteFailed)
 
 
@@ -69,6 +68,7 @@ class Deps:
     out_dir: Path = Path("tgnews-out")
     sleep: Callable[[float], None] = time.sleep
     check_shaping: Callable[[], None] = assert_shaping_available
+    llm_model: str = DEFAULT_MODEL  # build_deps sets it from build_llm
 
 
 @dataclass
@@ -316,7 +316,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
         return False
     style = learn.choose(engine, "headline_style", STYLES, ctx.rng)
     fmt = learn.choose(engine, "format", FORMATS, ctx.rng)
-    rewritten = rewrite(story, deps.llm, style)
+    rewritten = rewrite(story, deps.llm, style, deps.llm_model)
     caption = compose_caption(rewritten)
     ctx.seq += 1
     if ctx.dry_out is not None:

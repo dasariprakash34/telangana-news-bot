@@ -222,7 +222,9 @@ def required_env(cmd: str) -> set[str]:
     storage for `run`). Telegram is optional in the code, but the workflows must pass it."""
     need = {"DATABASE_URL"} if cmd != "dry-run" else set()
     if cmd in cli._NEEDS_LLM:
-        need.add("ANTHROPIC_API_KEY")
+        # build_llm reads the key of whichever provider is selected, so a step must pass both
+        # provider keys (the unused one may be an empty secret) plus the provider/model variables.
+        need |= {"GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "LLM_MODEL"}
     if cmd in cli._NEEDS_IG:
         need |= IG_ENV
     if cmd == "run":
@@ -257,3 +259,30 @@ def test_dropping_storage_from_run_step_would_fail():
 def test_normalised_database_url_documented():
     assert "postgresql+psycopg://" in (ROOT / "README.md").read_text()
     assert "postgres://" in (ROOT / ".env.example").read_text()
+
+
+def test_llm_env_only_passed_where_the_command_needs_it():
+    llm_env = {"GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "LLM_MODEL"}
+    for path in WORKFLOWS:
+        for job in load(path)["jobs"].values():
+            for step in job["steps"]:
+                line = step.get("run", "").strip()
+                if line.startswith("tgnews "):
+                    has = llm_env & set(step.get("env") or {})
+                    assert (line.split()[1] in cli._NEEDS_LLM) == bool(has), f"{path.name}: {line}"
+
+
+def test_llm_secrets_vs_variables_mapping():
+    for path in WORKFLOWS:
+        for name, value in env_values(load(path)):
+            if name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+                assert str(value).startswith("${{ secrets."), (path.name, name)
+            if name in ("LLM_PROVIDER", "LLM_MODEL"):
+                assert str(value).startswith("${{ vars."), (path.name, name)
+
+
+def test_anthropic_is_an_optional_extra_not_a_dependency():
+    import tomllib
+    proj = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert not any(d.lower().startswith("anthropic") for d in proj["dependencies"])
+    assert proj["optional-dependencies"]["anthropic"] == ["anthropic"]

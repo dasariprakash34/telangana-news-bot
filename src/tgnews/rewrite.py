@@ -6,13 +6,12 @@ import logging
 import re
 from dataclasses import dataclass
 
-import anthropic
-
+from tgnews.llm import LLM_AUTH_ERRORS
 from tgnews.models import Story
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"  # Anthropic provider only; Gemini needs LLM_MODEL
 STYLES = ("question", "number", "statement")
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
@@ -206,7 +205,7 @@ def rewrite(
                     {"role": "user", "content": _build_user_message(story, style_hint, problems)}
                 ],
             )
-        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+        except LLM_AUTH_ERRORS:
             raise
         except Exception as exc:
             log.warning("rewrite attempt failed: client error: %r", exc)

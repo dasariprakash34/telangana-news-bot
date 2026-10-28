@@ -1,6 +1,6 @@
 # tgnews: Telangana news to Telugu Instagram posts
 
-A scheduled job that fetches Telangana news from RSS feeds, rewrites each story as an original Telugu post with source credit (Claude), renders it as an image or carousel (Pillow), and publishes it through the official Instagram API. In `review` mode every draft goes to a private Telegram chat for Approve, Reject or Edit caption first. A daily job reads post insights and a learning loop adjusts topic, format, time slot and headline style.
+A scheduled job that fetches Telangana news from RSS feeds, rewrites each story as an original Telugu post with source credit (an LLM; free Google Gemini tier by default), renders it as an image or carousel (Pillow), and publishes it through the official Instagram API. In `review` mode every draft goes to a private Telegram chat for Approve, Reject or Edit caption first. A daily job reads post insights and a learning loop adjusts topic, format, time slot and headline style.
 
 Design: `docs/superpowers/specs/2026-10-28-telangana-instagram-bot-design.md` (if present in your checkout).
 
@@ -8,7 +8,8 @@ Design: `docs/superpowers/specs/2026-10-28-telangana-instagram-bot-design.md` (i
 
 ## Before you start
 
-- **Anthropic API key** (`ANTHROPIC_API_KEY`): create one in the Anthropic console; check Anthropic's current docs for the exact path.
+- **Gemini API key** (`GEMINI_API_KEY`) and **model id** (`LLM_MODEL`): the default LLM provider is the Google Gemini API free tier, which costs nothing and needs no credit card *(per a third-party page dated Oct 2026; unverified)*. Create a key in Google AI Studio (check Google AI Studio's current UI for where API keys live). Then copy a current Flash or Flash-Lite model id from AI Studio into `LLM_MODEL`; the program has no default for it on purpose, because model ids change. Free-tier quotas are not a fixed public table and may change, so check the limits shown in AI Studio. On the free tier Google may use your prompts to improve its models; that is acceptable here because the inputs are public news text, but do not send anything private.
+- **Anthropic (optional, pay-as-you-go)**: set the repository variable `LLM_PROVIDER=anthropic`, add the secret `ANTHROPIC_API_KEY` (from the Anthropic console) and install the extra with `pip install -e ".[anthropic]"`, which means changing the `Install tgnews` step in the workflows to `-e ".[postgres,anthropic]"`. `LLM_MODEL` is then optional. This provider is billed per use; the default stack is not.
 - **Meta development mode**: while your Meta app is in development mode, the Instagram account must be added to the app with a tester or other role. Check Meta's current docs for the exact steps.
 - **`IG_USER_ID`**: the Instagram user ID of the account the token belongs to. Meta's Business Login docs say the token exchange response includes a `user_id` field (verified). I could not verify a `GET /me?fields=user_id,username` call, so check Meta's current docs for how to fetch it with your token. Use the same ID the API returns for that token's account.
 - **Throwaway test account** (step 9): it needs its own Business/Creator switch, Facebook Page link, token and user ID, and must also be added to the Meta app.
@@ -86,17 +87,17 @@ In the GitHub repository settings (check GitHub's current docs for where Actions
 
 Repository **secrets**:
 
-`ANTHROPIC_API_KEY`, `DATABASE_URL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_API_VERSION`, `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, `STORAGE_REGION`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+`GEMINI_API_KEY`, `ANTHROPIC_API_KEY` (only if you use the anthropic provider; may be left unset or empty), `DATABASE_URL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_API_VERSION`, `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, `STORAGE_BUCKET`, `STORAGE_PUBLIC_BASE`, `STORAGE_REGION`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
 (`STORAGE_REGION` may be an empty secret; the default is `auto`.)
 
-Repository **variables** (not secret): `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`, `PER_RUN_CAP` (most posts or drafts one run may create; default `ceil(DAILY_CAP / ACTIVE_SLOT_COUNT)`, so a single run cannot burst the whole day's allowance). Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed: error messages shown or sent to Telegram are limited to this project's own sanitized messages (anything else is reduced to its error type), and any secret value found in them is replaced with `[REDACTED]`. An invalid `DATABASE_URL` is reported only as "invalid or unreachable".
+Repository **variables** (not secret): `LLM_PROVIDER` (`gemini` if unset, or `anthropic`), `LLM_MODEL` (required for gemini: the model id copied from Google AI Studio), `MODE` (defaults to `review` if unset), `DAILY_CAP`, `BRAND_NAME`, `TIME_SLOTS`, `ACTIVE_SLOT_COUNT`, `PER_RUN_CAP` (most posts or drafts one run may create; default `ceil(DAILY_CAP / ACTIVE_SLOT_COUNT)`, so a single run cannot burst the whole day's allowance). Unset variables fall back to the defaults in `src/tgnews/config.py`. See `.env.example` for every name with a one-line meaning. Secrets are never printed: error messages shown or sent to Telegram are limited to this project's own sanitized messages (anything else is reduced to its error type), and any secret value found in them is replaced with `[REDACTED]`. An invalid `DATABASE_URL` is reported only as "invalid or unreachable".
 
 If you change `TIME_SLOTS`, also edit the cron times in `.github/workflows/post.yml`, which must match the slots in UTC (a test checks the defaults).
 
 ### 9. Dry-run, then a throwaway account
 
-Locally, with `ANTHROPIC_API_KEY` set and real feeds in `config/sources.yaml`:
+Locally, with `GEMINI_API_KEY` and `LLM_MODEL` set (or the anthropic variables) and real feeds in `config/sources.yaml`:
 
 ```
 pip install -e ".[dev]"
@@ -136,7 +137,7 @@ Each post is tagged with topic, format (card or carousel), time slot and headlin
 
 ## Reading the weekly report
 
-The report (sent to Telegram on Mondays) is worded by Claude from numbers computed in code. Read it as a statement of what the data does and does not support. With fewer than 30 scored posts it should say no winner can be declared. Treat small differences between options with few posts as noise; the report does not explain causes and neither should you.
+The report (sent to Telegram on Mondays) is worded by the LLM from numbers computed in code. Read it as a statement of what the data does and does not support. With fewer than 30 scored posts it should say no winner can be declared. Treat small differences between options with few posts as noise; the report does not explain causes and neither should you.
 
 ## Known limitations
 

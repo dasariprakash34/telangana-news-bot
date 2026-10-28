@@ -109,7 +109,7 @@ def test_analyze_aborted_exits_nonzero_with_alert(engine, monkeypatch, capsys):
 
 def test_report_prints_and_sends_via_telegram(engine, monkeypatch, capsys):
     tg = TG()
-    monkeypatch.setattr(cli.report, "weekly_report", lambda eng, client, now: "REPORT TEXT")
+    monkeypatch.setattr(cli.report, "weekly_report", lambda eng, client, now, model: "REPORT TEXT")
     assert run(["report"], builder(engine, telegram=tg)) == 0
     assert "REPORT TEXT" in capsys.readouterr().out
     assert tg.calls[0][0] == "sendMessage" and tg.calls[0][1]["text"] == "REPORT TEXT"

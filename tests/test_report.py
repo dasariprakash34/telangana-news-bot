@@ -9,6 +9,7 @@ from tgnews import db, learn, report
 from tgnews.models import Story
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+MODEL = "test-model"
 
 
 class FakeClient:
@@ -42,7 +43,7 @@ def make(n):
 
 def test_report_says_insufficient_data_under_30_posts():
     client = FakeClient("x")
-    out = report.weekly_report(make(12), client, NOW)
+    out = report.weekly_report(make(12), client, NOW, MODEL)
     assert "12 scored posts" in out and "fewer than the 30" in out
     assert "no winner is declared" in out.lower() and "nothing is concluded" in out
     assert client.calls == []
@@ -51,7 +52,7 @@ def test_report_says_insufficient_data_under_30_posts():
 def test_report_over_30_uses_model_text_with_facts_only():
     e = make(40)
     client = FakeClient("Mean score was 0.12 across 40 scored posts.")
-    out = report.weekly_report(e, client, NOW)
+    out = report.weekly_report(e, client, NOW, MODEL)
     assert out == "Mean score was 0.12 across 40 scored posts."
     call = client.calls[0]
     assert "data" in call["system"].lower() and "speculate" in call["system"]
@@ -61,17 +62,17 @@ def test_report_over_30_uses_model_text_with_facts_only():
 
 
 def test_report_falls_back_when_model_invents_a_number():
-    out = report.weekly_report(make(40), FakeClient("Engagement rose 9876 percent."), NOW)
+    out = report.weekly_report(make(40), FakeClient("Engagement rose 9876 percent."), NOW, MODEL)
     assert "9876" not in out and "Weekly report: 40 scored posts" in out
 
 
 @pytest.mark.parametrize("reply", ["", "   "])
 def test_report_falls_back_on_empty_output(reply):
-    assert report.weekly_report(make(40), FakeClient(reply), NOW).startswith("Weekly report: 40")
+    assert report.weekly_report(make(40), FakeClient(reply), NOW, MODEL).startswith("Weekly report: 40")
 
 
 def test_report_falls_back_on_client_failure():
-    out = report.weekly_report(make(40), FakeClient(exc=RuntimeError("boom")), NOW)
+    out = report.weekly_report(make(40), FakeClient(exc=RuntimeError("boom")), NOW, MODEL)
     assert out.startswith("Weekly report: 40") and "mean score" in out
 
 
@@ -79,7 +80,7 @@ def test_report_auth_errors_propagate():
     resp = httpx.Response(401, request=httpx.Request("POST", "https://api.anthropic.com"))
     exc = anthropic.AuthenticationError("bad", response=resp, body=None)
     with pytest.raises(anthropic.AuthenticationError):
-        report.weekly_report(make(40), FakeClient(exc=exc), NOW)
+        report.weekly_report(make(40), FakeClient(exc=exc), NOW, MODEL)
 
 
 FACTS = '{"a": 0.1234, "b": 34, "slot": "09:00", "n": 40}'

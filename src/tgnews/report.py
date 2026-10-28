@@ -7,12 +7,11 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-import anthropic
 from sqlalchemy.engine import Engine
 
 from . import db
 from .learn import ATTRIBUTES, SCORED_THRESHOLD
-from .rewrite import DEFAULT_MODEL
+from .llm import LLM_AUTH_ERRORS
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +82,7 @@ def _numbers_ok(text: str, facts_json: str) -> bool:
     return True
 
 
-def weekly_report(engine: Engine, client, now: datetime) -> str:
+def weekly_report(engine: Engine, client, now: datetime, model: str) -> str:
     now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     facts = _facts(db.scored_posts(engine), now)
     if facts["scored_posts"] < SCORED_THRESHOLD:
@@ -91,10 +90,10 @@ def weekly_report(engine: Engine, client, now: datetime) -> str:
     facts_json = json.dumps(facts, sort_keys=True)
     try:
         response = client.messages.create(
-            model=DEFAULT_MODEL, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT,
+            model=model, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": f"<facts>\n{facts_json}\n</facts>"}])
         text = response.content[0].text
-    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError):
+    except LLM_AUTH_ERRORS:
         raise
     except Exception as exc:
         log.warning("weekly report model call failed: %r", exc)

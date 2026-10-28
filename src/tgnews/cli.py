@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-import anthropic
 from sqlalchemy import create_engine
 
 from . import analyze, db, learn, pipeline, publish, report
@@ -17,8 +16,10 @@ from .config import ConfigError, Settings
 from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
 from .instagram import InstagramClient
+from .llm import build_llm
 from .pipeline import Deps, PipelineError
 from .render import ShapingUnavailable
+from .rewrite import DEFAULT_MODEL
 from .safety import BlocklistError
 from .storage import StorageConfig, upload
 
@@ -39,7 +40,9 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
             raise PipelineError(f"missing required environment variable {name}")
         return value
 
-    llm = anthropic.Anthropic(api_key=need("ANTHROPIC_API_KEY")) if purpose in _NEEDS_LLM else None
+    llm, llm_model = None, DEFAULT_MODEL
+    if purpose in _NEEDS_LLM:
+        llm, llm_model = build_llm(env)
     engine = None
     if purpose != "dry-run":
         try:
@@ -60,7 +63,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
     return Deps(fetch=lambda: fetch_stories(sources, report=report), fetch_report=report,
-                llm=llm, engine=engine, upload=up, instagram=ig, telegram=tg,
+                llm=llm, llm_model=llm_model, engine=engine, upload=up, instagram=ig, telegram=tg,
                 out_dir=Path(env.get("OUT_DIR") or tempfile.mkdtemp(prefix="tgnews-")))
 
 
@@ -133,7 +136,7 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         learn.update_learning(deps.engine)
         print(f"recorded={recorded}")
     elif cmd == "report":
-        text = report.weekly_report(deps.engine, deps.llm, now)
+        text = report.weekly_report(deps.engine, deps.llm, now, deps.llm_model)
         print(text)
         _alert(deps.telegram, text)
     elif cmd == "refresh-token":
