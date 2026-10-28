@@ -96,30 +96,48 @@ def _wrap(draw, text: str, font, max_w: int) -> list[str] | None:
     return lines
 
 
-def _strip_dangling(text: str) -> str:
-    # Do not leave a combining sign or virama dangling before the ellipsis.
-    while text and (unicodedata.category(text[-1]) in ("Mn", "Mc", "Cf") or text[-1] == "్"):
-        text = text[:-1]
-    return text
+def _is_extender(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x0C00 <= cp <= 0x0C04 or 0x0C3E <= cp <= 0x0C56
+        or ch in ("\u200c", "\u200d") or unicodedata.category(ch) in ("Mn", "Mc")
+    )
+
+
+def _clusters(text: str) -> list[str]:
+    """Split into grapheme-ish clusters: a base plus its vowel signs/viramas/joiners,
+    and a consonant following a virama (conjunct) stays attached."""
+    out: list[str] = []
+    for ch in text:
+        if out and (_is_extender(ch) or out[-1][-1] == "\u0c4d"):
+            out[-1] += ch
+        else:
+            out.append(ch)
+    return out
 
 
 def _truncate_to_fit(draw, text: str, font, max_w: int, max_lines: int) -> list[str]:
     words = text.split()
-    while words:
-        words.pop()
-        candidate = (" ".join(words) + ELLIPSIS) if words else ELLIPSIS
-        lines = _wrap(draw, candidate, font, max_w)
+    for k in range(len(words) - 1, 0, -1):
+        lines = _wrap(draw, " ".join(words[:k]) + ELLIPSIS, font, max_w)
         if lines is not None and len(lines) <= max_lines:
             return lines
-        if not words:
-            break
-    # Single over-long word: cut characters.
-    chars = text
-    while chars:
-        chars = _strip_dangling(chars[:-1])
-        lines = _wrap(draw, chars + ELLIPSIS, font, max_w)
-        if lines is not None and len(lines) <= max_lines:
-            return lines
+    # First word alone is too long (or only one word): cut it at a cluster boundary.
+    clusters = _clusters(words[0] if words else "")
+    def attempt(n: int):
+        lines = _wrap(draw, "".join(clusters[:n]) + ELLIPSIS, font, max_w)
+        return lines if lines is not None and len(lines) <= max_lines else None
+
+    lo, hi, best = 1, len(clusters) - 1, None  # binary search the longest prefix that fits
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        got = attempt(mid)
+        if got is not None:
+            best, lo = got, mid + 1
+        else:
+            hi = mid - 1
+    if best is not None:
+        return best
     return [ELLIPSIS]
 
 
@@ -234,9 +252,12 @@ def render_card(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> lis
     return [_save(img, Path(out_dir) / f"card-{_slug(post)}.jpg")]
 
 
+MAX_CAROUSEL_POINTS = 6  # 2 per slide, at most 3 point slides: total 3-5 slides
+
+
 def _chunk_points(points: list[str]) -> list[list[str]]:
-    size = max(1, math.ceil(len(points) / 3))  # at most 3 point slides (total <= 5)
-    return [points[i:i + size] for i in range(0, len(points), size)]
+    points = points[:MAX_CAROUSEL_POINTS]
+    return [points[i:i + 2] for i in range(0, len(points), 2)]
 
 
 def render_carousel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND) -> list[Path]:

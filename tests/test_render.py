@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageChops, features
 
+from dataclasses import replace
+
 from tgnews import render
 from tgnews.render import (
     MARGIN,
@@ -99,3 +101,77 @@ def test_brand_is_parameter(tmp_path):
     b = render_card(POST, tmp_path / "b", brand="Other Page")[0]
     with Image.open(a) as ia, Image.open(b) as ib:
         assert ImageChops.difference(ia.convert("RGB"), ib.convert("RGB")).getbbox() is not None
+
+
+def _bg_theme(monkeypatch, bg=(30, 60, 90)):
+    monkeypatch.setitem(render.PALETTE, "other", render.Theme(bg, bg, (255, 255, 255), (255, 255, 255)))
+    return bg
+
+
+def _assert_clean_outside_margin(path, bg):
+    with Image.open(path) as im:
+        rgb = im.convert("RGB")
+    diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg)).convert("L")
+    inside = Image.new("L", rgb.size, 0)
+    inside.paste(255, (MARGIN, MARGIN, WIDTH_ - MARGIN, HEIGHT_ - MARGIN))
+    outside = ImageChops.multiply(diff, ImageChops.invert(inside))
+    assert outside.getextrema()[1] <= 6, path
+    assert ImageChops.multiply(diff, inside).getextrema()[1] > 100, path
+
+
+WIDTH_, HEIGHT_ = 1080, 1350
+LONG_TEXT = "తెలంగాణ రాష్ట్రంలో ప్రభుత్వం కొత్త పథకాన్ని ప్రారంభించింది "
+HUGE_WORD = "ప్రభుత్వపథకాలఅమలుకార్యక్రమాల" * 30
+
+
+@pytest.mark.parametrize("headline", [LONG_TEXT * 12, HUGE_WORD, HUGE_WORD + " చివరి మాట"])
+def test_truncated_headline_stays_inside_margins(tmp_path, monkeypatch, headline):
+    bg = _bg_theme(monkeypatch)
+    post = replace(POST, headline_te=headline, topic="other")
+    (path,) = render_card(post, tmp_path)
+    _assert_clean_outside_margin(path, bg)
+
+
+def test_carousel_max_points_inside_margins(tmp_path, monkeypatch):
+    bg = _bg_theme(monkeypatch)
+    pts = [LONG_TEXT * 4] * 6
+    post = replace(POST, headline_te=LONG_TEXT * 12, points_te=pts, source_credit=HUGE_WORD, topic="other")
+    paths = render_carousel(post, tmp_path)
+    assert len(paths) == 5
+    for p in paths:
+        _assert_clean_outside_margin(p, bg)
+
+
+def _fit(text, size_min=40):
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    box_w = 1080 - 2 * MARGIN
+    font, wrapped, _ = render.fit_paragraphs(draw, [text], box_w, 400, 84, size_min, True)
+    return draw, font, wrapped[0], box_w
+
+
+def test_single_overlong_word_keeps_text_plus_ellipsis():
+    draw, font, lines, box_w = _fit(HUGE_WORD)
+    assert lines != ["\u2026"] and "".join(lines).endswith("\u2026") and len("".join(lines)) > 3
+    assert all(render._width(draw, ln, font) <= box_w for ln in lines)
+
+
+def test_overlong_first_word_then_normal_words():
+    draw, font, lines, box_w = _fit(HUGE_WORD + " చివరి మాట")
+    assert lines != ["\u2026"] and len("".join(lines)) > 3
+    assert all(render._width(draw, ln, font) <= box_w for ln in lines)
+
+
+def test_truncation_does_not_split_clusters():
+    clusters = render._clusters("క్షత్రియ ప్రస్తుతం")
+    assert "".join(clusters) == "క్షత్రియ ప్రస్తుతం"
+    assert clusters[0] == "క్ష" and not any(c[0] in "్ాిుెైొో" for c in clusters)
+
+
+@pytest.mark.parametrize("n,slides", [(1, 3), (2, 3), (3, 4), (5, 5), (6, 5), (10, 5)])
+def test_carousel_chunking(tmp_path, n, slides):
+    pts = [f"పాయింట్ {i}" for i in range(n)]
+    assert all(len(c) <= 2 for c in render._chunk_points(pts))
+    assert sum(len(c) for c in render._chunk_points(pts)) == min(n, 6)
+    paths = render_carousel(replace(POST, points_te=pts), tmp_path / str(n))
+    assert len(paths) == slides
