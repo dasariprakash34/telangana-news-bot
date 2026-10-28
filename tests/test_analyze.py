@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine, update
 
 from tgnews import db
-from tgnews.analyze import (DEFAULT_WEIGHTS, MAX_POSTS_PER_RUN, InsightsUnavailable,
+from tgnews.analyze import (DEFAULT_WEIGHTS, MAX_POSTS_PER_RUN, InsightsAborted, InsightsUnavailable, _extract,
                             pull_insights, run_analysis, score)
 from tgnews.instagram import InstagramError
 from tgnews.models import PostState, Story
@@ -157,7 +157,7 @@ def test_per_post_error_isolation(engine):
 
 
 def test_metric_with_null_score_still_stored(engine):
-    pid = published(engine, "M1")
+    pid = published(engine, "M1", age_hours=24 * 8)
     c = FakeClient(refuse={"shares"})
     assert run_analysis(engine, c, NOW) == 1
     m = db.get_post(engine, pid).metrics
@@ -173,18 +173,6 @@ def test_post_cap_per_run(engine):
     assert len(db.posts_due_for_analysis(engine, NOW)) == 3
 
 
-def test_token_never_logged(engine, caplog):
-    published(engine, "BAD")
-
-    class C(FakeClient):
-        def get(self, path, **params):
-            raise InstagramError("Instagram API error (HTTP 190): message=expired [REDACTED]")
-    with caplog.at_level(logging.DEBUG):
-        assert run_analysis(engine, C(), NOW) == 0
-    assert SECRET not in caplog.text
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
-
-
 def test_real_client_error_scrubs_token_from_logs(engine, caplog):
     import httpx
     from tgnews.instagram import InstagramClient
@@ -196,6 +184,123 @@ def test_real_client_error_scrubs_token_from_logs(engine, caplog):
     client = InstagramClient(SECRET, "IG1", "v23.0",
                              http=httpx.Client(transport=httpx.MockTransport(handler)))
     with caplog.at_level(logging.DEBUG):
-        assert run_analysis(engine, client, NOW) == 0
+        with pytest.raises(InsightsAborted):
+            run_analysis(engine, client, NOW)
     assert SECRET not in caplog.text
     assert "REDACTED" in caplog.text
+
+
+def test_stuck_posts_do_not_starve_newer(engine):
+    for i in range(MAX_POSTS_PER_RUN + 5):
+        published(engine, f"OLD{i}", age_hours=24 * 10 + i)
+    fresh = published(engine, "FRESH", age_hours=60)
+    bad = {f"OLD{i}" for i in range(MAX_POSTS_PER_RUN + 5)}
+    assert run_analysis(engine, FakeClient(fail_media=bad), NOW) == 1
+    assert db.get_post(engine, fresh).metrics is not None
+
+
+def test_posts_without_media_id_dont_use_cap(engine):
+    for _ in range(MAX_POSTS_PER_RUN + 2):
+        pid = db.save_post(engine, story_id="s1", format="single", state=PostState.published)
+        db.set_post_media(engine, pid, "", NOW - timedelta(hours=100))
+    good = published(engine, "GOOD", age_hours=60)
+    assert run_analysis(engine, FakeClient(), NOW) == 1
+    assert db.get_post(engine, good).metrics is not None
+
+
+def test_posts_older_than_max_age_skipped(engine):
+    pid = published(engine, "OLD", age_hours=24 * 15)
+    c = FakeClient()
+    assert run_analysis(engine, c, NOW) == 0 and c.calls == []
+    assert db.get_post(engine, pid).metrics is None
+
+
+def test_partial_young_post_retried_old_post_stored(engine):
+    young = published(engine, "Y", age_hours=24 * 3)
+    old = published(engine, "O", age_hours=24 * 8)
+    assert run_analysis(engine, FakeClient(refuse={"saved"}), NOW) == 1
+    assert db.get_post(engine, young).metrics is None
+    m = db.get_post(engine, old).metrics
+    assert m["score"] is None and m["saves"] is None
+
+
+class AuthDies(FakeClient):
+    def __init__(self, after, **kw):
+        super().__init__(**kw)
+        self.after = after
+
+    def get(self, path, **params):
+        if len(self.calls) >= self.after:
+            self.calls.append((path, params))
+            raise InstagramError("Instagram API error (HTTP 400): code=190", status=400, code=190)
+        return super().get(path, **params)
+
+
+def test_token_dying_midway_stores_nothing_and_aborts(engine):
+    first = published(engine, "A", age_hours=100)
+    second = published(engine, "B", age_hours=90)
+    with pytest.raises(InsightsAborted):
+        run_analysis(engine, AuthDies(after=2), NOW)
+    assert db.get_post(engine, first).metrics is None
+    assert db.get_post(engine, second).metrics is None
+
+
+def test_persistent_auth_error_aborts_after_first_call(engine):
+    for i in range(5):
+        published(engine, f"M{i}")
+    c = AuthDies(after=0)
+    with pytest.raises(InsightsAborted):
+        run_analysis(engine, c, NOW)
+    assert len(c.calls) == 1
+
+
+def test_stored_records_kept_when_later_post_aborts(engine):
+    newer = published(engine, "NEW", age_hours=60)
+    older = published(engine, "OLD", age_hours=100)
+    c = AuthDies(after=6)
+    with pytest.raises(InsightsAborted):
+        run_analysis(engine, c, NOW)
+    assert db.get_post(engine, newer).metrics is not None
+    assert db.get_post(engine, older).metrics is None
+
+
+@pytest.mark.parametrize("status,code", [(401, None), (400, 190), (400, 102), (429, None),
+                                         (400, 4), (400, 17), (400, 32), (400, 613)])
+def test_abort_classification(status, code):
+    class C(FakeClient):
+        def get(self, path, **params):
+            raise InstagramError("x", status=status, code=code)
+    with pytest.raises(InsightsAborted):
+        pull_insights("M1", C())
+
+
+def test_other_4xx_is_just_unavailable():
+    class C(FakeClient):
+        def get(self, path, **params):
+            if params["metric"] == "views":
+                raise InstagramError("x", status=400, code=100)
+            return super().get(path, **params)
+    assert pull_insights("M1", C())["views"] is None
+
+
+def test_client_populates_status_and_code():
+    import httpx
+    from tgnews.instagram import InstagramClient
+    h = lambda r: httpx.Response(400, json={"error": {"message": "m", "code": 190}})
+    c = InstagramClient(SECRET, "IG1", "v23.0", http=httpx.Client(transport=httpx.MockTransport(h)))
+    with pytest.raises(InstagramError) as ei:
+        c.get("M1/insights", metric="reach")
+    assert ei.value.status == 400 and ei.value.code == 190 and SECRET not in repr(ei.value.args)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1, True, "5"])
+def test_extract_rejects_invalid_numbers(bad):
+    assert _extract(values_shape(bad)) is None
+    assert _extract(total_shape(bad)) is None
+
+
+def test_set_post_metrics_idempotent(engine):
+    pid = published(engine, "M1")
+    assert db.set_post_metrics(engine, pid, {"a": 1}) is True
+    assert db.set_post_metrics(engine, pid, {"a": 2}) is False
+    assert db.get_post(engine, pid).metrics == {"a": 1}

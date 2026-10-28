@@ -7,7 +7,8 @@ sanitized InstagramError messages and exception type names reach the log.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from . import db
@@ -20,6 +21,18 @@ METRICS = (("reach", "reach"), ("likes", "likes"), ("comments", "comments"),
            ("shares", "shares"), ("saves", "saved"), ("views", "views"))
 DEFAULT_WEIGHTS: dict[str, float] = {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
 MAX_POSTS_PER_RUN = 25  # x 6 metric calls = 150 calls, under the ~200/hour rate limit
+MAX_ANALYSIS_AGE = timedelta(days=14)  # older posts with no data are given up on
+PARTIAL_GRACE = timedelta(days=7)  # younger posts with a missing core metric are retried
+AUTH_CODES = {190, 102}
+RATE_LIMIT_CODES = {4, 17, 32, 613}
+
+
+class InsightsAborted(InstagramError):
+    """Auth/token or rate-limit failure: the whole run must stop (no point continuing)."""
+
+
+def _is_abort(exc: InstagramError) -> bool:
+    return exc.status in (401, 429) or exc.code in AUTH_CODES or exc.code in RATE_LIMIT_CODES
 
 
 class InsightsUnavailable(Exception):
@@ -37,6 +50,8 @@ def _extract(body: Any) -> float | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
+    if not math.isfinite(value) or value < 0:
+        return None
     return value
 
 
@@ -47,7 +62,11 @@ def pull_insights(media_id: str, client: Any) -> dict[str, float | None]:
     for key, api_name in METRICS:
         try:
             out[key] = _extract(client.get(f"{media_id}/insights", metric=api_name))
+        except InsightsAborted:
+            raise
         except InstagramError as exc:  # message is sanitized by the client
+            if _is_abort(exc):
+                raise InsightsAborted(str(exc), status=exc.status, code=exc.code) from None
             out[key] = None
             failures += 1
             last_error = str(exc)
@@ -74,18 +93,31 @@ def score(metrics: Mapping[str, float | None],
 
 
 def run_analysis(engine: Any, client: Any, now: datetime) -> int:
-    """Record insights for published posts >= 48h old. Returns the number recorded."""
+    """Record insights for published posts >= 48h old. Returns the number recorded.
+
+    Newest first within the 14-day window, so posts that never yield data cannot starve newer
+    ones. An auth or rate-limit error stops the run (already stored records are kept) and is
+    re-raised for the caller to alert on.
+    """
+    due = [p for p in db.posts_due_for_analysis(engine, now)
+           if p.media_id and now - p.posted_at <= MAX_ANALYSIS_AGE]
+    due.sort(key=lambda p: p.posted_at, reverse=True)
     recorded = 0
-    for post in db.posts_due_for_analysis(engine, now)[:MAX_POSTS_PER_RUN]:
-        if not post.media_id:
-            continue
+    for post in due[:MAX_POSTS_PER_RUN]:
         try:
             metrics = pull_insights(post.media_id, client)
             if all(v is None for v in metrics.values()):
                 log.warning("insights not available yet for post %s; will retry", post.id)
                 continue
-            db.set_post_metrics(engine, post.id, {**metrics, "score": score(metrics)})
-            recorded += 1
+            core_missing = any(metrics.get(k) is None for k in ("reach", "shares", "saves"))
+            if core_missing and now - post.posted_at < PARTIAL_GRACE:
+                log.warning("partial insights for post %s; will retry", post.id)
+                continue
+            if db.set_post_metrics(engine, post.id, {**metrics, "score": score(metrics)}):
+                recorded += 1
+        except InsightsAborted as exc:
+            log.error("insights run aborted at post %s (auth or rate limit): %s", post.id, exc)
+            raise
         except InsightsUnavailable as exc:
             log.warning("insights unavailable for post %s, will retry: %s", post.id, exc)
         except Exception as exc:  # isolate: one bad post must not stop the rest

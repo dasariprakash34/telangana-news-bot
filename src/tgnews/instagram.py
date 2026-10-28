@@ -24,7 +24,15 @@ _VERSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class InstagramError(Exception):
-    """Instagram call failed. The message is sanitized and safe to log."""
+    """Instagram call failed. The message is sanitized and safe to log.
+
+    `status` (HTTP status) and `code` (Graph `error.code`) are optional, numeric only.
+    """
+
+    def __init__(self, message: str = "", *, status: int | None = None, code: int | None = None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
 
 
 class InstagramClient:
@@ -97,10 +105,18 @@ class InstagramClient:
         except ValueError:
             body = None
         if resp.status_code >= 400 or (isinstance(body, dict) and "error" in body):
-            raise InstagramError(self._describe_error(resp.status_code, body)) from None
+            raise InstagramError(self._describe_error(resp.status_code, body),
+                                 status=resp.status_code, code=self._error_code(body)) from None
         if not isinstance(body, dict):
-            raise InstagramError(f"Instagram returned an unexpected response (HTTP {resp.status_code})")
+            raise InstagramError(f"Instagram returned an unexpected response (HTTP {resp.status_code})",
+                                 status=resp.status_code)
         return body
+
+    @staticmethod
+    def _error_code(body: Any) -> int | None:
+        err = body.get("error") if isinstance(body, dict) else None
+        code = err.get("code") if isinstance(err, dict) else None
+        return code if isinstance(code, int) and not isinstance(code, bool) else None
 
     def _describe_error(self, status: int, body: Any) -> str:
         err = body.get("error") if isinstance(body, dict) else None

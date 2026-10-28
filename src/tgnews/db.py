@@ -263,6 +263,9 @@ def posts_due_for_analysis(engine: Engine, now: datetime) -> list[Post]:
     return [p for p in map(_row_to_post, rows) if p.posted_at <= cutoff]
 
 
-def set_post_metrics(engine: Engine, post_id: int, metrics: dict) -> None:
+def set_post_metrics(engine: Engine, post_id: int, metrics: dict) -> bool:
+    """Record metrics once; a no-op (False) if the post already has metrics."""
     with engine.begin() as conn:
-        conn.execute(update(posts).where(posts.c.id == post_id).values(metrics=metrics))
+        res = conn.execute(update(posts).where(posts.c.id == post_id, posts.c.metrics.is_(None))
+                           .values(metrics=metrics))
+        return res.rowcount == 1
