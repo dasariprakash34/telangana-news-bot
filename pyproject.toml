@@ -24,7 +24,7 @@ dev = ["pytest"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-tgnews = ["blocklist.yaml"]
+tgnews = ["blocklist.yaml", "assets/fonts/*.ttf", "assets/fonts/OFL.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
