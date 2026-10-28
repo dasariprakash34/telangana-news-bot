@@ -1,5 +1,6 @@
 import pytest
 
+from tgnews import config
 from tgnews.config import Settings
 
 
@@ -38,8 +39,9 @@ def test_daily_cap_invalid_raises(bad):
 def test_brand_and_slot_defaults():
     s = Settings.from_env({})
     assert s.brand_name == "Telangana News"
-    assert s.time_slots == ("02:00", "07:00", "13:00", "15:30")
-    assert s.active_slot_count == 3
+    assert s.time_slots == config.DEFAULT_TIME_SLOTS and len(s.time_slots) == 36
+    assert s.time_slots[0] == "00:30" and s.time_slots[-1] == "18:00"
+    assert s.active_slot_count == 36
 
 
 def test_brand_and_slot_overrides():
@@ -51,7 +53,7 @@ def test_brand_and_slot_overrides():
                                  {"ACTIVE_SLOT_COUNT": "0"}, {"ACTIVE_SLOT_COUNT": "x"}])
 def test_bad_slot_settings_raise(env):
     if env == {"TIME_SLOTS": ""}:  # blank means default, not an error
-        assert Settings.from_env(env).time_slots == ("02:00", "07:00", "13:00", "15:30")
+        assert Settings.from_env(env).time_slots == config.DEFAULT_TIME_SLOTS
         return
     with pytest.raises(ValueError):
         Settings.from_env(env)

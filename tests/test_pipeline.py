@@ -124,6 +124,9 @@ def make_deps(engine, tmp_path, stories, *, llm=None, ig=None, tg=None, **kw):
 
 
 def settings(**kw):
+    # Tests assume the original 4 slots / 3 active, independent of the production defaults.
+    kw.setdefault("time_slots", ("02:00", "07:00", "13:00", "15:30"))
+    kw.setdefault("active_slot_count", 3)
     return Settings(mode=kw.pop("mode", "review"), **kw)
 
 
