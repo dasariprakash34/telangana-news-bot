@@ -102,7 +102,8 @@ def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: l
     ]]}
     try:
         msg = client.call("sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
-                          text=f"Draft post #{post_id}\n\n{caption}")
+                          text=f"Draft post #{post_id}\n\n{caption}\n\n"
+                               "To edit the caption: reply to this message with the new caption, then tap Approve.")
     except TelegramError as exc:
         if previews:
             log.warning("draft %s: previews were sent but the review message failed: %s",
@@ -188,7 +189,8 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
     if action == "edit":
         prompt = client.call(
             "sendMessage", chat_id=client.chat_id, reply_to_message_id=message.get("message_id"),
-            text=f"Reply to this draft with the new caption for post #{post_id}.")
+            text=f"Reply to this message with the new caption for post #{post_id}. "
+                 "(You can also reply directly to the draft message.)")
         db.set_kv(engine, f"{KV_MSG_PREFIX}{prompt['message_id']}", str(post_id))
         _safe(client, "answerCallbackQuery", callback_query_id=cq["id"], text="Send the new caption")
         return None

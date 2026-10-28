@@ -128,6 +128,14 @@ def test_reject_confirmation_message(engine, fake, draft):
     assert any(f"Rejected post #{draft}" in p["text"] for p in fake.of("sendMessage"))
 
 
+def test_reply_directly_to_draft_message_edits_caption(engine, fake, draft):
+    new = "హైదరాబాద్‌లో భారీ వర్షం కురిసింది. రోడ్లు జలమయమయ్యాయి. మూలం: The Hindu #Hyderabad"
+    fake.updates = [reply(1, new, 101)]  # 101 is the draft message itself, no Edit button tap needed
+    out = gate.poll_decisions(engine, fake.client(), NOW)
+    assert out == [Decision(post_id=draft, action="edit", caption=new)]
+    assert any("Caption updated" in p["text"] for p in fake.of("sendMessage"))
+
+
 def test_notify_never_raises(engine):
     class Boom(FakeTelegram):
         def handler(self, request):
