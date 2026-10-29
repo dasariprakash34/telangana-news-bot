@@ -31,6 +31,7 @@ from .rewrite import RewrittenPost
 ASSETS = Path(__file__).resolve().parent / "assets" / "reel"
 FPS = 24
 JPEG_QUALITY = 85
+VOICE_PAUSE = 0.6  # seconds between voice requests
 SCENE_TAIL = 0.2  # a short beat after a sentence, then a hard cut: reels do not idle
 CTA = "మరిన్ని తెలంగాణ వార్తల కోసం ఫాలో అవ్వండి"
 TICKER_TAG = "తాజా వార్త"
@@ -271,7 +272,8 @@ def render_animated(post: RewrittenPost, out_dir, brand: str, *, voice: str, rat
                     tts: Callable = edge_tts_voice,
                     run: Callable[[list[str]], str] = _run,
                     browser_factory: Callable[[], AnimBrowser] = AnimBrowser,
-                    encoder: Callable[..., None] = encode_segment) -> list[Path]:
+                    encoder: Callable[..., None] = encode_segment,
+                    sleep: Callable[[float], None] | None = None) -> list[Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     ffmpeg, ffprobe = _tool("ffmpeg"), _tool("ffprobe")
@@ -281,7 +283,14 @@ def render_animated(post: RewrittenPost, out_dir, brand: str, *, voice: str, rat
     with browser_factory() as browser:
         for i, scene in enumerate(scenes, start=1):
             mp3 = out / f"voice-{slug}-{i}.mp3"
-            words = tts(scene["say"], voice, rate, mp3)
+            if i > 1:
+                (sleep or time.sleep)(VOICE_PAUSE)  # be gentle with the free voice service
+            try:
+                words = tts(scene["say"], voice, rate, mp3)
+            except ReelUnavailable as exc:  # say WHICH sentence failed, for the log and Telegram
+                text = scene["say"]
+                raise ReelUnavailable(f"scene {i} of {len(scenes)} ({len(text)} characters, "
+                                      f"starting {text[:24]!r}): {exc}") from None
             try:
                 seconds = float(run([ffprobe, "-v", "error", "-show_entries", "format=duration",
                                      "-of", "csv=p=0", str(mp3)]).strip())

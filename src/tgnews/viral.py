@@ -399,14 +399,24 @@ def _stop(out: DailySummary, deps: Deps, status: str, detail: str) -> DailySumma
     return out
 
 
+def _release(eng, story_id: str) -> None:
+    try:
+        db.release_story(eng, story_id)
+    except Exception as exc:  # never hide the real error behind a failed clean-up
+        log.warning("viral: could not release %s (%s)", story_id, type(exc).__name__)
+
+
 def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now: datetime, day: str,
                 out: DailySummary) -> DailySummary:
     eng = deps.engine
-    story = Story(id=f"viral-{day}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
+    # one id per attempt: a failed attempt keeps its claim (a story with a post is never released), and the
+    # failed topic is already excluded by its URL, so a retry the same day moves on to another topic
+    story = Story(id=f"viral-{day}-{hashlib.sha1(cand.url.encode()).hexdigest()[:6]}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
                   source_name="trending", published_at=now, topic_hint="other")
     if not db.save_story(eng, story):  # this topic (or day) was already claimed
         out.status, out.detail = "already_today", "topic already used"
         return out
+    post_id = None
     try:
         caption = compose_caption(post)
         video = deps.render_reel(post, deps.out_dir / story.id, settings.brand_name)
@@ -415,12 +425,14 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
                                headline_style=post.headline_style, state=PostState.draft)
         db.set_post_caption(eng, post_id, caption)
         gate.save_content(eng, post_id, post, "reel")
-        gate.send_draft(eng, deps.telegram, post_id, [url], caption)
+        gate.send_draft(eng, deps.telegram, post_id, [url], caption, local_video=video[0])
     except ReelUnavailable as exc:
-        db.release_story(eng, story.id)
+        _release(eng, story.id)
         return _stop(out, deps, "failed", f"the reel could not be made ({exc})")
     except Exception:
-        db.release_story(eng, story.id)
+        if post_id is not None:  # a draft nobody can review must not linger
+            db.update_post_state(eng, post_id, PostState.failed)
+        _release(eng, story.id)
         raise
     db.set_kv(eng, KV_DAY + day, str(post_id))
     gate.notify(deps.telegram, f"Daily viral reel is ready: draft #{post_id} ({cand.kind}: {cand.title[:60]}). "
