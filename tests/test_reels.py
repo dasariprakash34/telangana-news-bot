@@ -493,3 +493,47 @@ def test_missing_chrome_is_unavailable(monkeypatch):
     monkeypatch.setattr(reel_anim, "_MAC_CHROME", "/no/such/chrome")
     with pytest.raises(ReelUnavailable, match="Chrome is not installed"):
         reel_anim.find_chrome()
+
+
+# -- voice retries ------------------------------------------------------------------------------------------
+def test_voice_is_retried_when_the_free_service_answers_no_audio(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    class NoAudioReceived(Exception):
+        pass
+
+    calls = []
+
+    class Communicate:
+        def __init__(self, text, voice, rate=None, boundary=None):
+            calls.append(1)
+
+        async def stream(self):
+            if len(calls) < 3:
+                raise NoAudioReceived("no audio")
+            yield {"type": "audio", "data": b"mp3data"}
+            yield {"type": "WordBoundary", "offset": 1_000_000, "duration": 5_000_000, "text": "హలో"}
+
+    monkeypatch.setitem(sys.modules, "edge_tts", types.SimpleNamespace(Communicate=Communicate))
+    sleeps = []
+    words = reel.edge_tts_voice("హలో", "te-IN-MohanNeural", "+20%", tmp_path / "a.mp3", sleep=sleeps.append)
+    assert words == [(0.1, 0.5, "హలో")] and len(calls) == 3 and sleeps == [3.0, 6.0]
+    assert (tmp_path / "a.mp3").read_bytes() == b"mp3data"
+
+
+def test_voice_gives_up_after_three_tries_with_a_clear_message(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    class Communicate:
+        def __init__(self, *a, **k):
+            pass
+
+        async def stream(self):
+            raise RuntimeError("nope")
+            yield
+
+    monkeypatch.setitem(sys.modules, "edge_tts", types.SimpleNamespace(Communicate=Communicate))
+    with pytest.raises(ReelUnavailable, match=r"RuntimeError\) after 3 tries"):
+        reel.edge_tts_voice("x", "v-V-x", "+0%", tmp_path / "a.mp3", sleep=lambda s: None)

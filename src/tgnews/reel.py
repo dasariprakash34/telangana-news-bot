@@ -14,6 +14,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +29,7 @@ TAIL_SECONDS = 0.4  # short pause after each slide's sentence
 MAX_REEL_SECONDS = 75.0  # Instagram Reels allow far longer; a news reel should be short anyway
 MAX_ZOOM = 1.06
 log = logging.getLogger(__name__)
+VOICE_ATTEMPTS, VOICE_BACKOFF = 3, 3.0  # seconds: wait 3 s, then 6 s
 
 
 class ReelUnavailable(RuntimeError):
@@ -68,7 +70,8 @@ def _run(cmd: list[str]) -> str:
     return res.stdout
 
 
-def edge_tts_voice(text: str, voice: str, rate: str, path: Path) -> list[tuple[float, float, str]]:
+def edge_tts_voice(text: str, voice: str, rate: str, path: Path,
+                   sleep: Callable[[float], None] = time.sleep) -> list[tuple[float, float, str]]:
     """Write `text` as an MP3 with a Microsoft Edge neural voice (free, unofficial service) and
     return the spoken words as (start seconds, duration seconds, word), so on-screen text can be
     timed exactly to the voice."""
@@ -91,13 +94,19 @@ def edge_tts_voice(text: str, voice: str, rate: str, path: Path) -> list[tuple[f
         Path(path).write_bytes(bytes(audio))
         return words
 
-    try:
-        words = asyncio.run(go())
-    except Exception as exc:  # network, voice name, empty audio...
-        raise ReelUnavailable(f"voice generation failed ({type(exc).__name__})") from None
-    if not Path(path).is_file() or Path(path).stat().st_size == 0:
-        raise ReelUnavailable("voice generation produced no audio")
-    return words
+    last = "unknown"
+    for attempt in range(VOICE_ATTEMPTS):
+        if attempt:
+            sleep(VOICE_BACKOFF * attempt)  # the free service sometimes answers "no audio" under load
+        try:
+            words = asyncio.run(go())
+        except Exception as exc:  # network, voice name, empty audio...
+            last = type(exc).__name__
+            continue
+        if Path(path).is_file() and Path(path).stat().st_size > 0:
+            return words
+        last = "empty audio"
+    raise ReelUnavailable(f"voice generation failed ({last}) after {VOICE_ATTEMPTS} tries")
 
 
 # -- frames -------------------------------------------------------------------

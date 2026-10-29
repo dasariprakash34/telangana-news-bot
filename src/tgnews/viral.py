@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 
 from . import db, gate, safety
-from .llm import LLM_AUTH_ERRORS
+from .llm import LLM_AUTH_ERRORS, LLMError, LLMRateLimited
 from .models import PostState, Story
 from .pipeline import Deps, PipelineError, _aware, compose_caption, sanitize_error
 from .reel import ReelUnavailable
@@ -206,12 +207,34 @@ def _safe(cand: Candidate, now: datetime) -> bool:
 
 
 # -- the model ---------------------------------------------------------------------------------
-def _ask(llm, model: str, system: str, user: str, max_tokens: int = 4000) -> str:
-    resp = llm.messages.create(model=model, max_tokens=max_tokens, system=system,
-                               messages=[{"role": "user", "content": user}])
+class ScriptRejected(ValueError):
+    """The script failed validation twice. The message lists the problems and is safe to show."""
+
+
+def _ask(llm, model: str, system: str, user: str, max_tokens: int = 4000,
+         sleep: Callable[[float], None] | None = None) -> str:
+    """One model call. A transient failure (rate limit, server error) is retried once after a pause."""
+    for attempt in (1, 2):
+        try:
+            resp = llm.messages.create(model=model, max_tokens=max_tokens, system=system,
+                                       messages=[{"role": "user", "content": user}])
+            break
+        except LLM_AUTH_ERRORS:
+            raise
+        except LLMError as exc:
+            if attempt == 2 or type(exc).__name__ == "LLMContentError":
+                raise
+            (sleep or time.sleep)(45 if isinstance(exc, LLMRateLimited) else 8)
     if getattr(resp, "stop_reason", None) == "max_tokens":
         raise ValueError("reply truncated")
     return resp.content[0].text
+
+
+def _why(exc: BaseException) -> str:
+    """Our own error types carry sanitized messages; for anything else only the type is safe."""
+    if isinstance(exc, (LLMError, ScriptRejected, ReelUnavailable)):
+        return " ".join(str(exc).split())[:200]
+    return sanitize_error(exc)
 
 
 _PICK_SYSTEM = (
@@ -313,7 +336,7 @@ def write_script(llm, model: str, cand: Candidate) -> RewrittenPost:
         problems = validate_script(post, facts)
         if not problems:
             return post
-    raise ValueError("script rejected: " + "; ".join(problems))
+    raise ScriptRejected("script rejected: " + "; ".join(problems))
 
 
 # -- the daily run ---------------------------------------------------------------------------------
@@ -347,7 +370,7 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
         except LLM_AUTH_ERRORS:
             raise
         except Exception as exc:
-            out.errors.append(f"pick: {sanitize_error(exc)}")
+            out.errors.append(f"pick: {_why(exc)}")
             first = None
         if first is not None:
             order.remove(first)
@@ -361,10 +384,10 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
             except LLM_AUTH_ERRORS:
                 raise
             except Exception as exc:
-                out.errors.append(f"{cand.title[:40]}: {sanitize_error(exc)}")
+                out.errors.append(f"{cand.title[:40]}: {_why(exc)}")
                 continue
             return _make_draft(settings, deps, cand, post, now, day, out)
-        return _stop(out, deps, "failed", "could not write a valid script: " + "; ".join(out.errors[-2:]))
+        return _stop(out, deps, "failed", "could not write a valid script: " + " | ".join(out.errors[-3:]))
     finally:
         if own_http:
             http.close()
