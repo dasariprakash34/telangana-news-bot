@@ -35,7 +35,7 @@ from .storage import StorageError
 
 log = logging.getLogger(__name__)
 
-MAX_STORY_AGE = timedelta(hours=48)
+MAX_STORY_AGE = timedelta(hours=18)  # only today's news; yesterday's is skipped
 CAP_WINDOW = timedelta(hours=24)
 # An approved post older than this is never published (stale news; also lets the images repo prune
 # safely: IMAGES_KEEP_DAYS is at least 3 days).
@@ -271,6 +271,7 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
             fresh.append(s)
     seen = [s.url for s in fresh if db.story_seen(engine, s.url)]
     candidates = dedupe(fresh, seen, db.recent_titles(engine, now - timedelta(days=7)))
+    candidates.sort(key=lambda s: _aware(s.published_at), reverse=True)  # newest first
     summary.new = len(candidates)
 
     ctx = _Ctx(settings, deps, engine, now, slot, deps.rng_factory(), summary,
