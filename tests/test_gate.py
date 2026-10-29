@@ -136,6 +136,45 @@ def test_reply_directly_to_draft_message_edits_caption(engine, fake, draft):
     assert any("Caption updated" in p["text"] for p in fake.of("sendMessage"))
 
 
+def test_reply_to_the_image_message_also_edits(engine, fake, draft):
+    new = "హైదరాబాద్‌లో భారీ వర్షం కురిసింది. రోడ్లు జలమయమయ్యాయి. మూలం: The Hindu #Hyderabad"
+    fake.updates = [reply(1, new, 1)]  # message id 1 is one of the preview images (media group)
+    out = gate.poll_decisions(engine, fake.client(), NOW)
+    assert out == [Decision(post_id=draft, action="edit", caption=new)]
+
+
+def test_unmatched_reply_is_explained_not_ignored(engine, fake, draft):
+    fake.updates = [reply(1, "some caption", 99999)]
+    assert gate.poll_decisions(engine, fake.client(), NOW) == []
+    assert any("could not match" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_edit_resends_the_draft_with_buttons_and_new_caption(engine, fake, draft):
+    new = "హైదరాబాద్‌లో భారీ వర్షం కురిసింది. రోడ్లు జలమయమయ్యాయి. మూలం: The Hindu #Hyderabad"
+    fake.calls.clear()
+    fake.updates = [reply(1, new, 101)]
+    gate.poll_decisions(engine, fake.client(), NOW)
+    drafts = [p for p in fake.of("sendMessage") if "reply_markup" in p]
+    assert len(drafts) == 1 and new in drafts[0]["text"]
+    labels = [b["text"] for b in drafts[0]["reply_markup"]["inline_keyboard"][0]]
+    assert labels == ["Approve", "Reject", "Edit caption"]
+
+
+def test_edit_after_approval_is_explained(engine, fake, draft):
+    fake.updates = [cb(1, draft, "a"), reply(2, "హైదరాబాద్ వార్త #Hyderabad", 101)]
+    gate.poll_decisions(engine, fake.client(), NOW)
+    assert any("no longer pending" in p["text"] and "not applied" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_edited_message_update_is_handled_like_a_message(engine, fake, draft):
+    new = "హైదరాబాద్‌లో భారీ వర్షం కురిసింది. రోడ్లు జలమయమయ్యాయి. మూలం: The Hindu #Hyderabad"
+    upd = reply(1, new, 101)
+    upd["edited_message"] = upd.pop("message")
+    fake.updates = [upd]
+    out = gate.poll_decisions(engine, fake.client(), NOW)
+    assert out == [Decision(post_id=draft, action="edit", caption=new)]
+
+
 def test_notify_never_raises(engine):
     class Boom(FakeTelegram):
         def handler(self, request):

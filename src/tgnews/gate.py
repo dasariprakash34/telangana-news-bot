@@ -86,30 +86,40 @@ class TelegramClient:
 
 
 # -- sending ----------------------------------------------------------------
-def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: list[str],
-               caption: str) -> None:
-    """Send previews + caption with Approve / Reject / Edit buttons; record the draft row and
-    map the Telegram message id to the post so edit replies can be matched."""
-    if len(previews) == 1:
-        client.call("sendPhoto", chat_id=client.chat_id, photo=previews[0])
-    elif previews:
-        client.call("sendMediaGroup", chat_id=client.chat_id,
-                    media=[{"type": "photo", "media": u} for u in previews[:10]])
+def _send_draft_message(client: TelegramClient, post_id: int, caption: str) -> Any:
     keyboard = {"inline_keyboard": [[
         {"text": "Approve", "callback_data": f"a:{post_id}"},
         {"text": "Reject", "callback_data": f"r:{post_id}"},
         {"text": "Edit caption", "callback_data": f"e:{post_id}"},
     ]]}
+    return client.call(
+        "sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
+        text=f"Draft post #{post_id}\n\n{caption}\n\n"
+             "To edit the caption: reply to this message with the new caption, then tap Approve.")
+
+
+def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: list[str],
+               caption: str) -> None:
+    """Send previews + caption with Approve / Reject / Edit buttons; record the draft row and
+    map the Telegram message id to the post so edit replies can be matched."""
+    preview_ids: list[int] = []
+    if len(previews) == 1:
+        sent = client.call("sendPhoto", chat_id=client.chat_id, photo=previews[0])
+        preview_ids = [sent["message_id"]] if isinstance(sent, Mapping) and "message_id" in sent else []
+    elif previews:
+        sent = client.call("sendMediaGroup", chat_id=client.chat_id,
+                           media=[{"type": "photo", "media": u} for u in previews[:10]])
+        preview_ids = [m["message_id"] for m in (sent or []) if isinstance(m, Mapping) and "message_id" in m]
     try:
-        msg = client.call("sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
-                          text=f"Draft post #{post_id}\n\n{caption}\n\n"
-                               "To edit the caption: reply to this message with the new caption, then tap Approve.")
+        msg = _send_draft_message(client, post_id, caption)
     except TelegramError as exc:
         if previews:
             log.warning("draft %s: previews were sent but the review message failed: %s",
                         post_id, exc)
         raise
     db.set_kv(engine, f"{KV_MSG_PREFIX}{msg['message_id']}", str(post_id))
+    for mid in preview_ids:  # a reply to the image itself must also find its draft
+        db.set_kv(engine, f"{KV_MSG_PREFIX}{mid}", str(post_id))
     with engine.begin() as conn:
         conn.execute(db.drafts.insert().values(
             post_id=post_id, caption=caption, slides=list(previews), created_at=db._now()))
@@ -125,14 +135,15 @@ def poll_decisions(engine: Engine, client: TelegramClient, now: datetime,
     raw = db.get_kv(engine, KV_OFFSET)
     offset = int(raw) if raw else 0
     updates = client.call("getUpdates", offset=offset, timeout=0,
-                          allowed_updates=["callback_query", "message"]) or []
+                          allowed_updates=["callback_query", "message", "edited_message"]) or []
     decisions: list[Decision] = []
     for upd in sorted(updates, key=lambda u: u["update_id"]):
         try:
             if "callback_query" in upd:
                 d = _handle_callback(engine, client, upd["callback_query"])
-            elif "message" in upd:
-                d = _handle_message(engine, client, upd["message"], require_credit)
+            elif "message" in upd or "edited_message" in upd:
+                d = _handle_message(engine, client, upd.get("message") or upd["edited_message"],
+                                    require_credit)
             else:
                 d = None
         except Exception as exc:
@@ -219,10 +230,15 @@ def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, An
         return None
     mapped = db.get_kv(engine, f"{KV_MSG_PREFIX}{target}")
     if mapped is None:
+        notify(client, "I could not match your reply to a draft, so no caption was changed. "
+                       "Reply directly to the draft message (the one with the Approve button).",
+               msg.get("message_id"))
         return None
     post_id = int(mapped)
     post = db.get_post(engine, post_id)
     if post is None or post.state != PostState.draft:
+        notify(client, f"Post #{post_id} is no longer pending (already approved, rejected or expired), "
+                       "so your caption was not applied.", msg.get("message_id"))
         return None
     problems = validate(_candidate(post.caption or "", text), require_credit)
     if problems:
@@ -234,8 +250,13 @@ def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, An
               reply_to_message_id=msg.get("message_id"),
               text=f"Post #{post_id} is no longer pending; caption not changed.")
         return None
-    _safe(client, "sendMessage", chat_id=client.chat_id, reply_to_message_id=msg.get("message_id"),
-          text=f"Caption updated for post #{post_id}. It still needs Approve.")
+    notify(client, f"Caption updated for post #{post_id}. Tap Approve on the draft below to publish it.",
+           msg.get("message_id"))
+    try:  # fresh draft message carrying the NEW caption and the buttons
+        fresh = _send_draft_message(client, post_id, text)
+        db.set_kv(engine, f"{KV_MSG_PREFIX}{fresh['message_id']}", str(post_id))
+    except TelegramError as exc:
+        log.warning("could not resend draft %s after edit: %s", post_id, exc)
     return Decision(post_id=post_id, action="edit", caption=text)
 
 

@@ -174,7 +174,7 @@ def _listen(args, settings: Settings, deps: Deps, *, clock: Callable[[], float] 
                 worker.start()
         try:
             updates = deps.telegram.call("getUpdates", offset=current, timeout=20,
-                                         allowed_updates=["callback_query", "message"]) or []
+                                         allowed_updates=["callback_query", "message", "edited_message"]) or []
             failures = 0
         except gate.TelegramError as exc:
             failures += 1
