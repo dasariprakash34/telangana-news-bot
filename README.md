@@ -205,3 +205,13 @@ With `REELS_ENABLED=true` some new posts are made as vertical **Telugu-voice Ree
 - The reel never shows or reads the source line (the caption still follows `REQUIRE_SOURCE_CREDIT`).
 - Poster-text edits (`headline:` replies) are not available on reels; reject the draft or edit the caption.
 - A reel is made by `src/tgnews/reel.py`; `tgnews dry-run` can render one into the output folder when `REELS_ENABLED=true`.
+
+## Daily viral reel (`daily-viral.yml`)
+
+Once a day (18:00 IST) `tgnews daily-viral` makes a **one-minute Telugu reel about one interesting trending topic** and sends it to Telegram for approval; after you tap Approve the next publish run posts it (around 19:00 IST). It never posts by itself.
+
+- **Where the topic comes from** (public feeds only): Google Trends India's public RSS (what people in India search for, with the real news headlines behind each trend) and the Hacker News front page filtered to tech and AI. Instagram has no official "what is viral" feed and is not scraped.
+- **Checked against real articles:** a topic needs real article text from 2 different sources (1 for tech) before it is used. The model is asked to pick the most interesting, safe topic (no crime, politics, religion, tragedies, health or money advice, private people), then writes the script **only from the fetched article text**. Every number in the script must appear in that text, it must be 6 to 8 short points (about a minute), and the safety blocklist applies. If nothing passes, Telegram gets a "skipped today" note and nothing is made.
+- **Look:** the same animated reel as the news reels, with a "వైరల్" chip and a "ట్రెండింగ్" ticker. The reel never shows a source name.
+- Needs the same secrets and variables as the posting workflow (`GEMINI_API_KEY` or Anthropic, `DATABASE_URL`, `IMAGES_GH_*`, `TELEGRAM_*`) and the `viral` extra (`trafilatura`), which the workflow installs. To stop it, disable the `tgnews daily viral` workflow in the Actions tab.
+- One reel per UTC day; run it by hand from the Actions tab to test.

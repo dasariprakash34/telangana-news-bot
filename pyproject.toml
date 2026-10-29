@@ -24,6 +24,7 @@ dev = ["pytest"]
 postgres = ["psycopg[binary]"]
 anthropic = ["anthropic"]
 reels = ["edge-tts>=7", "websocket-client"]
+viral = ["trafilatura"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

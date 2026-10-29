@@ -1,0 +1,54 @@
+name: tgnews daily viral
+
+on:
+  schedule:
+    # 18:00 IST. The reel is made and sent to Telegram for approval; once approved it is published by
+    # the next publish-approved run (every posting run does one), so it goes out around 19:00 IST.
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+# Single shared group for ALL tgnews workflows, so two runs never overlap. A new run does not
+# cancel one already in progress.
+concurrency:
+  group: tgnews
+  cancel-in-progress: false
+
+# Least privilege: the jobs only read the repository. Everything else goes through secrets.
+permissions:
+  contents: read
+
+jobs:
+  daily-viral:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system libraries for Telugu text shaping
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b ffmpeg
+      - name: Install tgnews
+        run: python -m pip install -e ".[postgres,reels,viral]"
+      - name: Make today's viral reel
+        run: tgnews daily-viral
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          STORAGE_PROVIDER: ${{ vars.STORAGE_PROVIDER }}
+          IMAGES_GH_TOKEN: ${{ secrets.IMAGES_GH_TOKEN }}
+          IMAGES_GH_REPO: ${{ vars.IMAGES_GH_REPO }}
+          IMAGES_GH_BRANCH: ${{ vars.IMAGES_GH_BRANCH }}
+          IMAGES_PUBLIC_BASE: ${{ vars.IMAGES_PUBLIC_BASE }}
+          IMAGES_VIDEO_BASE: ${{ vars.IMAGES_VIDEO_BASE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BRAND_NAME: ${{ vars.BRAND_NAME }}
+          REEL_VOICE: ${{ vars.REEL_VOICE }}
+          REEL_RATE: ${{ vars.REEL_RATE }}
+          REEL_STYLE: ${{ vars.REEL_STYLE }}

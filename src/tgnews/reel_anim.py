@@ -79,6 +79,8 @@ _TOPIC_EFFECT = {"politics": "politics", "crime": "crime", "weather": "fog", "jo
 def effect_for(post: RewrittenPost) -> str:
     """The background effect that fits the news: rain, heat or cold from the headline words first (a
     farming story about rain still gets rain), otherwise the topic's own effect."""
+    if getattr(post, "effect", None):
+        return post.effect
     head = post.headline_te
     for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
         if any(w in head for w in words):
@@ -131,8 +133,9 @@ def map_shape() -> dict:
 
 def meta_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> dict:
     theme = PALETTE.get(post.topic, DEFAULT_THEME)
-    return {"label": brand, "chip": TOPIC_LABEL.get(post.topic, TOPIC_LABEL["other"]),
-            "tag": TICKER_TAG, "ticker": brand, "effect": effect_for(post),
+    return {"label": brand,
+            "chip": getattr(post, "badge", None) or TOPIC_LABEL.get(post.topic, TOPIC_LABEL["other"]),
+            "tag": getattr(post, "ticker_tag", None) or TICKER_TAG, "ticker": brand, "effect": effect_for(post),
             "foot": "AI voice", "map": map_shape(),
             "theme": {"top": _hex(theme.bg_top), "bottom": _hex(theme.bg_bottom),
                       "accent": _hex(theme.accent)}}
