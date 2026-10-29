@@ -36,6 +36,10 @@ DEFAULT_KEEP_DAYS = 14
 MIN_KEEP_DAYS = 3  # publishing is capped at 48 h (pipeline.MAX_PUBLISH_AGE); keep a safety margin
 DEFAULT_PRUNE_LIMIT = 60
 _JPEG_SUFFIXES = {".jpg", ".jpeg"}
+MAX_VIDEO_BYTES = 25 * 1024 * 1024  # a 30-60 s reel is a few MB; GitHub's contents API allows far more
+# raw.githubusercontent.com serves .mp4 as application/octet-stream (checked 2026-10-29), while
+# jsDelivr serves video/mp4 with range support, which is what Instagram's video fetch needs.
+VIDEO_CDN = "https://cdn.jsdelivr.net/gh"
 _REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _BRANCH_RE = re.compile(r"[A-Za-z0-9._/-]+")
 _DIR_RE = re.compile(r"\d{8}")
@@ -103,7 +107,7 @@ class CheckResult:
 
 class GithubImageStore:
     def __init__(self, token: str, repo: str, branch: str = "main", public_base: str | None = None, *,
-                 http: httpx.Client | None = None, sleep: Callable[[float], None] | None = None,
+                 video_base: str | None = None, http: httpx.Client | None = None, sleep: Callable[[float], None] | None = None,
                  clock: Callable[[], datetime] = _utcnow, unique: Callable[[], str] | None = None,
                  pause: float = 1.0) -> None:
         if not (token or "").strip():
@@ -129,6 +133,12 @@ class GithubImageStore:
         self._clock = clock
         self._unique = unique or (lambda: secrets.token_hex(3))
         self._pause = pause
+        if video_base is not None:
+            video_base = video_base.strip()
+            if (not video_base.startswith("https://") or "?" in video_base or "#" in video_base
+                    or any(c.isspace() for c in video_base)):
+                raise StorageError("IMAGES_VIDEO_BASE must be an https:// URL without '?', '#' or spaces")
+        self.video_base = (video_base or f"{VIDEO_CDN}/{repo}@{branch}").rstrip("/")
 
     def __repr__(self) -> str:
         return f"GithubImageStore(repo={self.repo!r}, branch={self.branch!r}, public_base={self.public_base!r})"
@@ -146,6 +156,7 @@ class GithubImageStore:
         return cls(need("IMAGES_GH_TOKEN"), need("IMAGES_GH_REPO"),
                    (env.get("IMAGES_GH_BRANCH") or "").strip() or "main",
                    (env.get("IMAGES_PUBLIC_BASE") or "").strip() or None,
+                   video_base=(env.get("IMAGES_VIDEO_BASE") or "").strip() or None,
                    http=kw.pop("http", None) or _default_http(), **kw)
 
     # -- HTTP -----------------------------------------------------------------------------
@@ -201,6 +212,40 @@ class GithubImageStore:
                 raise _status_error(resp.status_code, f"uploading {target}")
             urls.append(f"{self.public_base}/{urllib.parse.quote(target)}")
         return urls
+
+    def upload_video(self, path: Path, prefix: str) -> str:
+        """Commit one MP4 as posts/YYYYMMDD/<prefix>-<random>.mp4 (pruned with the images) and return
+        its public HTTPS URL on the video CDN (Instagram fetches Reels from a public URL)."""
+        safe = _safe_prefix(prefix)
+        path = Path(path)
+        if not path.is_file():
+            raise StorageError(f"not an existing file: {path}")
+        if path.suffix.lower() != ".mp4":
+            raise StorageError(f"only MP4 videos are supported, got {path.name}")
+        if path.stat().st_size > MAX_VIDEO_BYTES:
+            raise StorageError(f"video too large for upload (max 25 MB): {path.name}")
+        with path.open("rb") as fh:
+            if fh.read(12)[4:8] != b"ftyp":
+                raise StorageError(f"not an MP4 (bad file signature): {path.name}")
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        day = f"{POSTS_DIR}/{self._clock():%Y%m%d}"
+        target = f"{day}/{safe}-{self._unique()}.mp4"
+        for attempt in (1, 2):
+            resp = self._request("PUT", target, f"uploading {target}",
+                                 json={"message": f"add {target}", "branch": self.branch, "content": data})
+            if resp.status_code in (409, 422) and attempt == 1:
+                target = f"{day}/{safe}-{self._unique()}.mp4"  # fresh random part, retry once
+                continue
+            break
+        if resp.status_code in (409, 422):
+            raise StorageError(f"GitHub rejected the file (HTTP {resp.status_code}) for {target}; "
+                               "not overwriting")
+        if resp.status_code != 201:
+            if resp.status_code == 200:
+                raise StorageError(f"unexpected GitHub response (HTTP 200) for {target}: "
+                                   "an existing file was updated, which must not happen")
+            raise _status_error(resp.status_code, f"uploading {target}")
+        return f"{self.video_base}/{urllib.parse.quote(target)}"
 
     # -- housekeeping ---------------------------------------------------------------------
     def prune(self, older_than_days: int, now: datetime, *, max_files: int = DEFAULT_PRUNE_LIMIT) -> PruneResult:

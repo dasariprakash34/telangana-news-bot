@@ -251,12 +251,15 @@ def list_posts_by_state(engine: Engine, state: PostState) -> list[Post]:
     return [_row_to_post(r) for r in rows]
 
 
-def count_posts_since(engine: Engine, since: datetime, exclude: tuple[PostState, ...]) -> int:
-    """Posts created at or after `since` whose state is not in `exclude` (daily-cap accounting)."""
+def count_posts_since(engine: Engine, since: datetime, exclude: tuple[PostState, ...],
+                      fmt: str | None = None) -> int:
+    """Posts created at or after `since` whose state is not in `exclude` (daily-cap accounting);
+    only posts of one format when `fmt` is given."""
+    conds = [posts.c.created_at.is_not(None), posts.c.state.not_in([s.value for s in exclude])]
+    if fmt is not None:
+        conds.append(posts.c.format == fmt)
     with engine.connect() as conn:
-        rows = conn.execute(select(posts.c.created_at).where(
-            posts.c.created_at.is_not(None),
-            posts.c.state.not_in([s.value for s in exclude]))).all()
+        rows = conn.execute(select(posts.c.created_at).where(*conds)).all()
     since = _utc(since)
     return sum(1 for (c,) in rows if _utc(c) >= since)
 

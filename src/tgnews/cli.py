@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import os
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from typing import Callable, Mapping, Sequence
 
 from sqlalchemy import create_engine
 
-from . import analyze, db, gate, learn, pipeline, publish, report
+from . import analyze, db, gate, learn, pipeline, publish, reel, report
 from .config import ConfigError, Settings
 from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
@@ -25,7 +26,7 @@ from .render import ShapingUnavailable
 from .rewrite import DEFAULT_MODEL
 from .safety import BlocklistError
 from . import storage_github
-from .storage import build_uploader, storage_provider
+from .storage import build_uploader, build_video_uploader, storage_provider
 
 DEFAULT_SOURCES = "config/sources.yaml"
 _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
@@ -63,10 +64,18 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     up = None
     if purpose == "run":
         up = build_uploader(env)
+    make_reel, up_video = None, None
+    if settings.reels_enabled and purpose in ("run", "dry-run"):
+        make_reel = functools.partial(reel.render_reel, voice=settings.reel_voice,
+                                      rate=settings.reel_rate, style=settings.reel_style,
+                                      require_credit=settings.require_source_credit)
+        if purpose == "run":
+            up_video = build_video_uploader(env)
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
     return Deps(fetch=lambda: fetch_stories(sources, report=report), fetch_report=report,
                 llm=llm, llm_model=llm_model, engine=engine, upload=up, instagram=ig, telegram=tg,
+                render_reel=make_reel, upload_video=up_video,
                 out_dir=Path(env.get("OUT_DIR") or tempfile.mkdtemp(prefix="tgnews-")))
 
 
