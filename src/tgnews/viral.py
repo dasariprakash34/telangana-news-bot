@@ -409,11 +409,14 @@ def _release(eng, story_id: str) -> None:
 def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now: datetime, day: str,
                 out: DailySummary) -> DailySummary:
     eng = deps.engine
-    story = Story(id=f"viral-{day}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
+    # one id per attempt: a failed attempt keeps its claim (a story with a post is never released), and the
+    # failed topic is already excluded by its URL, so a retry the same day moves on to another topic
+    story = Story(id=f"viral-{day}-{hashlib.sha1(cand.url.encode()).hexdigest()[:6]}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
                   source_name="trending", published_at=now, topic_hint="other")
     if not db.save_story(eng, story):  # this topic (or day) was already claimed
         out.status, out.detail = "already_today", "topic already used"
         return out
+    post_id = None
     try:
         caption = compose_caption(post)
         video = deps.render_reel(post, deps.out_dir / story.id, settings.brand_name)
@@ -427,6 +430,8 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
         _release(eng, story.id)
         return _stop(out, deps, "failed", f"the reel could not be made ({exc})")
     except Exception:
+        if post_id is not None:  # a draft nobody can review must not linger
+            db.update_post_state(eng, post_id, PostState.failed)
         _release(eng, story.id)
         raise
     db.set_kv(eng, KV_DAY + day, str(post_id))

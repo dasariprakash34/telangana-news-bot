@@ -212,7 +212,7 @@ def test_daily_run_makes_a_reel_draft_and_never_publishes(tmp_path):
     post = db.get_post(deps.engine, out.post_id)
     assert post.format == "reel" and post.state == PostState.draft and "ISRO" in post.caption
     assert deps.tg.calls[0][0] == "sendVideo"
-    assert deps.tg.calls[0][1]["video"].endswith("/viral-20261029/reel.mp4")
+    assert "/viral-20261029-" in deps.tg.calls[0][1]["video"] and deps.tg.calls[0][1]["video"].endswith("/reel.mp4")
     note = [p for m, p in deps.tg.calls if m == "sendMessage"][-1]["text"]
     assert "Approve it before 7 PM IST" in note
     assert deps.made[0].badge == viral.BADGE and deps.made[0].ticker_tag == viral.TICKER
@@ -326,3 +326,39 @@ def test_a_failed_cleanup_never_hides_the_real_error(tmp_path, monkeypatch):
     monkeypatch.setattr(viral.db, "release_story", broken)
     out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
     assert out.status == "failed" and "voice down" in deps.tg.calls[-1][1]["text"]
+
+
+TWO_TOPICS = TRENDS.replace("</channel>", """<item><title>second topic</title><ht:approx_traffic>1,000+</ht:approx_traffic>
+ <ht:news_item><ht:news_item_title>Second story</ht:news_item_title><ht:news_item_snippet>x</ht:news_item_snippet>
+  <ht:news_item_url>https://news-a.example.com/second</ht:news_item_url><ht:news_item_source>News A</ht:news_item_source></ht:news_item>
+ <ht:news_item><ht:news_item_title>Second story again</ht:news_item_title><ht:news_item_snippet>y</ht:news_item_snippet>
+  <ht:news_item_url>https://news-b.example.com/second</ht:news_item_url><ht:news_item_source>News B</ht:news_item_source></ht:news_item></item></channel>""")
+
+
+def test_a_draft_telegram_could_not_send_is_failed_and_a_retry_moves_to_another_topic(tmp_path):
+    from tgnews import gate
+
+    def facts(url):
+        return FACTS_A if "isro" in url or "second" in url else FACTS_B
+
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    good_tg = deps.telegram
+
+    class Broken(TG):
+        def call(self, method, **payload):
+            if method == "sendVideo":
+                raise gate.TelegramError("sendVideo failed: HTTP 400 failed to get HTTP URL content")
+            return super().call(method, **payload)
+
+        def upload(self, method, field, path, **payload):  # the direct-upload fallback fails too
+            raise gate.TelegramError("sendVideo upload failed: HTTP 413")
+
+    deps.telegram = Broken()
+    with pytest.raises(gate.TelegramError):
+        viral.run_daily(Settings(), deps, http=trends_client(TWO_TOPICS), fetch_text=facts)
+    [failed] = db.list_posts_by_state(deps.engine, PostState.failed)
+    assert failed.format == "reel" and db.get_kv(deps.engine, "viral_day:20261029") is None
+    deps.telegram = good_tg  # next attempt the same day
+    deps.llm = LLM('{"index": 0}', script("50"))
+    out = viral.run_daily(Settings(), deps, http=trends_client(TWO_TOPICS), fetch_text=facts)
+    assert out.status == "created" and out.topic == "second topic"
