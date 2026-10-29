@@ -51,6 +51,19 @@ POINTS_MIN, POINTS_MAX, MAX_POINT = 6, 8, 130
 WORDS_MIN, WORDS_MAX = 80, 150  # about one minute at the reel's speaking speed
 BADGE, TICKER = "వైరల్", "ట్రెండింగ్"
 KV_DAY = "viral_day:"
+# Three article reels a day. A slot is chosen from the UTC hour the run starts in (the workflow starts
+# them at 02:00, 07:00 and 12:30 UTC = 07:30, 12:30 and 18:00 IST, an hour or so before the post time):
+# (name, first UTC hour that is NOT this slot, preferred kind of topic, post time to say in Telegram)
+SLOTS = (("morning", 5, "india", "8 AM"), ("afternoon", 10, "tech", "1 PM"), ("evening", 24, None, "7 PM"))
+
+
+def slot_for(now: datetime) -> tuple[str, str | None, str]:
+    """(slot name, preferred topic kind or None, post time) for a run starting at `now` (UTC)."""
+    hour = _aware(now).hour
+    for name, until, prefer, label in SLOTS:
+        if hour < until:
+            return name, prefer, label
+    return SLOTS[-1][0], SLOTS[-1][2], SLOTS[-1][3]
 UA = "Mozilla/5.0 (compatible; tgnews/0.1)"
 
 
@@ -86,6 +99,7 @@ class Candidate:
 @dataclass
 class DailySummary:
     status: str = ""  # created | already_today | no_topic | failed
+    slot: str = ""  # morning | afternoon | evening
     detail: str = ""
     post_id: int | None = None
     topic: str = ""
@@ -350,8 +364,10 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
         raise PipelineError("daily-viral needs Telegram: the reel waits for your approval")
     now = _aware(deps.now())
     day = f"{now:%Y%m%d}"
-    out = DailySummary()
-    if db.get_kv(eng, KV_DAY + day):
+    slot, prefer, when = slot_for(now)
+    key = f"{day}:{slot}"
+    out = DailySummary(slot=slot)
+    if db.get_kv(eng, KV_DAY + key):
         out.status = "already_today"
         return out
     own_http = http is None
@@ -362,6 +378,9 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
         pool = shortlist(cands, lambda url: db.story_seen(eng, url))
         usable = [enrich(c, fetch_text) for c in pool]
         usable = [c for c in usable if has_enough_facts(c)]
+        preferred = [c for c in usable if c.kind == prefer]
+        if preferred:  # morning: India trends, afternoon: tech and AI, evening: the best of either
+            usable = preferred
         if not usable:
             return _stop(out, deps, "no_topic", "no trending topic had enough real articles to write from")
         order = list(range(len(usable)))
@@ -386,7 +405,7 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
             except Exception as exc:
                 out.errors.append(f"{cand.title[:40]}: {_why(exc)}")
                 continue
-            return _make_draft(settings, deps, cand, post, now, day, out)
+            return _make_draft(settings, deps, cand, post, now, key, when, out)
         return _stop(out, deps, "failed", "could not write a valid script: " + " | ".join(out.errors[-3:]))
     finally:
         if own_http:
@@ -395,7 +414,7 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
 
 def _stop(out: DailySummary, deps: Deps, status: str, detail: str) -> DailySummary:
     out.status, out.detail = status, detail
-    gate.notify(deps.telegram, f"Daily viral reel: skipped today ({detail}).")
+    gate.notify(deps.telegram, f"Article reel ({out.slot}): skipped ({detail}).")
     return out
 
 
@@ -406,12 +425,12 @@ def _release(eng, story_id: str) -> None:
         log.warning("viral: could not release %s (%s)", story_id, type(exc).__name__)
 
 
-def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now: datetime, day: str,
-                out: DailySummary) -> DailySummary:
+def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now: datetime, key: str,
+                when: str, out: DailySummary) -> DailySummary:
     eng = deps.engine
     # one id per attempt: a failed attempt keeps its claim (a story with a post is never released), and the
     # failed topic is already excluded by its URL, so a retry the same day moves on to another topic
-    story = Story(id=f"viral-{day}-{hashlib.sha1(cand.url.encode()).hexdigest()[:6]}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
+    story = Story(id=f"viral-{key.replace(':', '-')}-{hashlib.sha1(cand.url.encode()).hexdigest()[:6]}", title=cand.title, summary=cand.facts()[:2000], url=cand.url,
                   source_name="trending", published_at=now, topic_hint="other")
     if not db.save_story(eng, story):  # this topic (or day) was already claimed
         out.status, out.detail = "already_today", "topic already used"
@@ -434,8 +453,8 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
             db.update_post_state(eng, post_id, PostState.failed)
         _release(eng, story.id)
         raise
-    db.set_kv(eng, KV_DAY + day, str(post_id))
-    gate.notify(deps.telegram, f"Daily viral reel is ready: draft #{post_id} ({cand.kind}: {cand.title[:60]}). "
-                               "Approve it before 7 PM IST to post it this evening.")
+    db.set_kv(eng, KV_DAY + key, str(post_id))
+    gate.notify(deps.telegram, f"Article reel ({out.slot}) is ready: draft #{post_id} ({cand.kind}: {cand.title[:60]}). "
+                               f"Approve it before {when} IST to post it at that time.")
     out.status, out.post_id, out.topic, out.kind = "created", post_id, cand.title, cand.kind
     return out

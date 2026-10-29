@@ -2,9 +2,13 @@ name: tgnews daily viral
 
 on:
   schedule:
-    # 18:00 IST. The reel is made and sent to Telegram for approval; once approved it is published by
-    # the next publish-approved run (every posting run does one), so it goes out around 19:00 IST.
-    - cron: "30 12 * * *"
+    # Three article reels a day: 07:30, 12:30 and 18:00 IST (an hour or so before the 8 AM, 1 PM and 7 PM
+    # post times). Each is made and sent to Telegram for approval; once approved it is published by the
+    # next publish-approved run (every posting run does one). The slot comes from the UTC hour the run
+    # starts in (src/tgnews/viral.py SLOTS): keep these crons in step with it.
+    - cron: "0 2 * * *"   # morning: India trends
+    - cron: "0 7 * * *"   # afternoon: tech and AI
+    - cron: "30 12 * * *" # evening: the best of either
   workflow_dispatch:
 
 # Single shared group for ALL tgnews workflows, so two runs never overlap. A new run does not
