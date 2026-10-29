@@ -15,7 +15,7 @@ from typing import Callable, Mapping, Sequence
 
 from sqlalchemy import create_engine
 
-from . import analyze, db, gate, learn, pipeline, publish, reel, report
+from . import analyze, db, gate, learn, pipeline, publish, reel, report, viral
 from .config import ConfigError, Settings
 from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
@@ -33,7 +33,7 @@ _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
 # Only our own error types have messages known to be free of env values; everything else is
 # shown as its type name (and then scrubbed).
 _SHOWN = pipeline._SAFE_MESSAGE + (PipelineError, BlocklistError, ShapingUnavailable, ConfigError)
-_NEEDS_LLM = {"run", "dry-run", "report"}
+_NEEDS_LLM = {"run", "dry-run", "report", "daily-viral"}
 _NEEDS_IG = {"publish", "analyze", "refresh-token"}
 
 
@@ -65,11 +65,11 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     if purpose == "run":
         up = build_uploader(env)
     make_reel, up_video = None, None
-    if settings.reels_enabled and purpose in ("run", "dry-run"):
+    if (settings.reels_enabled and purpose in ("run", "dry-run")) or purpose == "daily-viral":
         make_reel = functools.partial(reel.render_reel, voice=settings.reel_voice,
                                       rate=settings.reel_rate, style=settings.reel_style,
                                       require_credit=settings.require_source_credit)
-        if purpose == "run":
+        if purpose in ("run", "daily-viral"):
             up_video = build_video_uploader(env)
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
@@ -121,6 +121,7 @@ def _parser() -> argparse.ArgumentParser:
                              "depend on GitHub's unreliable cron")
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
+    sub.add_parser("daily-viral", help="make today's trending-topic reel and send it to Telegram for approval")
     return p
 
 
@@ -228,6 +229,12 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         print(_fmt(summary))
         for e in summary.errors:
             print(f"error: {e}", file=sys.stderr)
+    elif cmd == "daily-viral":
+        summary = viral.run_daily(settings, deps)
+        print(f"status={summary.status} kind={summary.kind or '-'} post_id={summary.post_id} "
+              f"detail={summary.detail or '-'}")
+        for e in summary.errors:
+            print(f"error: {e}", file=sys.stderr)
     elif cmd == "listen":
         return _listen(args, settings, deps)
     elif cmd == "analyze":
@@ -290,7 +297,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
                 pass
             return 1
     purpose = {"run": "run", "dry-run": "dry-run", "publish-approved": "publish",
-               "listen": "publish", "analyze": "analyze", "report": "report", "refresh-token": "refresh-token"}[args.command]
+               "listen": "publish", "analyze": "analyze", "report": "report", "refresh-token": "refresh-token",
+               "daily-viral": "daily-viral"}[args.command]
     deps = None
     try:
         settings = Settings.from_env(env)

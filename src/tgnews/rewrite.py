@@ -99,6 +99,9 @@ class RewrittenPost:
     source_credit: str
     topic: str
     headline_style: str
+    badge: str | None = None  # label for the corner chip, instead of the topic's (daily viral reel)
+    ticker_tag: str | None = None  # label for the ticker tag, instead of "తాజా వార్త"
+    effect: str | None = None  # background effect name, instead of the one chosen from the news
 
 
 def _is_telugu(ch: str) -> bool:
