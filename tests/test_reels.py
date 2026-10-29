@@ -630,3 +630,33 @@ def test_telegram_client_uploads_a_file_as_multipart_and_hides_the_token(tmp_pat
     with pytest.raises(gate.TelegramError) as err:
         bad.upload("sendVideo", "video", f, chat_id="42")
     assert "SECRET-BOT-TOKEN" not in str(err.value)
+
+
+# -- category scenes ------------------------------------------------------------------------------------------
+def test_each_category_gets_its_own_scene_from_the_story_words():
+    def fx(head, topic="other", points=("అంశం",)):
+        return reel_anim.effect_for(replace(post(points=points), headline_te=head, topic=topic))
+    assert fx("సౌతాఫ్రికా ఆటగాడి వికెట్ సంబరం వైరల్", "sports") == "cricket"
+    assert fx("బ్యాట్స్\u200cమన్ సెంచరీ", "sports") == "cricket"          # zero-width joiner inside the word
+    assert fx("చంద్రయాన్ 4 ప్రయోగం") == "space"
+    assert fx("కొత్త సినిమా ట్రైలర్ విడుదల") == "film"
+    assert fx("గూగుల్ కొత్త ఏఐ మోడల్ విడుదల", "business") == "tech"
+    assert fx("భారీ వర్షంలో క్రికెట్ మ్యాచ్ రద్దు", "sports") == "rain"   # weather words still come first
+    assert fx("జట్టు గెలిచింది", "sports") == "sports"                   # no cricket word: the trophy scene
+    assert fx("వార్త", "other", points=("ఈ మ్యాచ్‌లో బౌలర్ ఐదు వికెట్లు తీశాడు",)) == "cricket"  # from the points
+
+
+def test_special_scenes_have_their_own_colours_and_topic_scenes_keep_theirs():
+    cricket = reel_anim.meta_for(replace(post(), headline_te="వికెట్ సంబరం", topic="sports"), "B")
+    assert cricket["effect"] == "cricket" and cricket["theme"]["accent"] == "#8ce682"
+    space = reel_anim.meta_for(replace(post(), headline_te="ఇస్రో రాకెట్", topic="other"), "B")
+    assert space["effect"] == "space" and space["theme"]["top"] == "#0e1030"
+    plain = reel_anim.meta_for(replace(post(), headline_te="ఏదో వార్త", topic="business"), "B")
+    assert plain["effect"] == "business" and plain["theme"]["accent"] == "#ffc85a"
+
+
+def test_every_scene_name_the_page_can_draw_is_a_name_the_code_can_choose():
+    html = (reel_anim.ASSETS / "anim.html").read_text(encoding="utf-8")
+    chosen = set(reel_anim._TOPIC_EFFECT.values()) | {n for n, _ in reel_anim._SPECIFIC} | {"rain", "heat", "fog"}
+    for name in chosen:
+        assert f"  {name}(t)" in html or f"EFFECTS.{name}=" in html, f"anim.html has no scene named {name}"

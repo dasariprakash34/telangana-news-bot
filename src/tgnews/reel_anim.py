@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -72,25 +73,51 @@ def scenes_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> 
 _RAIN = ("వర్ష", "వాన", "వరద", "తుఫాన", "తుపాన", "జలమయ", "ముంపు", "పిడుగు")
 _HEAT = ("ఎండ", "వడగాల్", "వడదెబ్బ", "ఉష్ణోగ్రత", "వేడి")
 _COLD = ("చలి", "పొగమంచు", "మంచు")
+# Story words that give a category its own illustration (checked after rain/heat/cold). The text is
+# compared with zero-width joiners removed, because Telugu uses them inside words like బ్యాట్స్‌మన్.
+_SPECIFIC = (
+    ("cricket", ("క్రికెట్", "వికెట్", "ఓవర్", "టెస్ట్", "ఐపీఎల్", "బౌలర్", "బ్యాటర్", "బ్యాట్స్మన్", "పరుగుల",
+                 "సెంచరీ", "ఇన్నింగ్స్", "టీ20", "వన్డే", "డకౌట్", "సిక్స్", "కెప్టెన్", "cricket", "wicket", "IPL")),
+    ("space", ("ఇస్రో", "చంద్రయాన్", "అంతరిక్ష", "రాకెట్", "ఉపగ్రహ", "నాసా", "చంద్రుడ", "గ్రహం", "ISRO", "NASA")),
+    ("film", ("సినిమా", "చిత్రం", "ఓటీటీ", "హీరో", "హీరోయిన్", "ట్రైలర్", "టాలీవుడ్", "బాలీవుడ్", "నటుడు",
+              "నటి", "దర్శకుడు", "OTT", "movie")),
+    ("tech", ("ఏఐ", "కృత్రిమ మేధ", "టెక్", "సాఫ్ట్వేర్", "చాట్జీపీటీ", "జెమిని", "గూగుల్", "యాపిల్", "స్మార్ట్ఫోన్",
+              "రోబో", "చిప్", "సైబర్", "ఇంటర్నెట్", "AI ", "ChatGPT", "Gemini", "OpenAI")),
+)
 _TOPIC_EFFECT = {"politics": "politics", "crime": "crime", "weather": "fog", "jobs": "jobs",
                  "farming": "farming", "sports": "sports", "education": "education",
                  "health": "health", "business": "business", "other": "other"}
+# Scenes with their own colours (the rest use the topic's palette).
+_EFFECT_THEME = {
+    "cricket": ((10, 52, 34), (6, 32, 22), (140, 230, 130)),
+    "space": ((14, 16, 48), (6, 6, 26), (170, 150, 255)),
+    "tech": ((8, 28, 52), (4, 14, 32), (80, 220, 255)),
+    "film": ((44, 14, 40), (26, 8, 26), (255, 196, 90)),
+}
+
+
+def _plain(text: str) -> str:
+    return text.replace("\u200c", "").replace("\u200d", "")
 
 
 def effect_for(post: RewrittenPost) -> str:
-    """The background effect that fits the news: rain, heat or cold from the headline words first (a
-    farming story about rain still gets rain), otherwise the topic's own effect."""
+    """The scene that fits the news: rain, heat or cold from the headline words first (a farming story
+    about rain still gets rain), then the category's own scene from the story's words (cricket ball and
+    stumps, rocket, film strip, neural network), otherwise the topic's scene."""
     if getattr(post, "effect", None):
         return post.effect
-    head = post.headline_te
+    head = _plain(post.headline_te)
     for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
         if any(w in head for w in words):
             return name
-    text = head + " " + " ".join(post.points_te)
+    text = _plain(head + " " + " ".join(post.points_te))
     if post.topic == "weather":
         for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
             if any(w in text for w in words):
                 return name
+    for name, words in _SPECIFIC:
+        if any(_plain(w) in text for w in words):
+            return name
     return _TOPIC_EFFECT.get(post.topic, "other")
 
 
@@ -133,10 +160,14 @@ def map_shape() -> dict:
 
 
 def meta_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> dict:
+    effect = effect_for(post)
     theme = PALETTE.get(post.topic, DEFAULT_THEME)
+    if effect in _EFFECT_THEME:
+        top, bottom, accent = _EFFECT_THEME[effect]
+        theme = replace(theme, bg_top=top, bg_bottom=bottom, accent=accent)
     return {"label": brand,
             "chip": getattr(post, "badge", None) or TOPIC_LABEL.get(post.topic, TOPIC_LABEL["other"]),
-            "tag": getattr(post, "ticker_tag", None) or TICKER_TAG, "ticker": brand, "effect": effect_for(post),
+            "tag": getattr(post, "ticker_tag", None) or TICKER_TAG, "ticker": brand, "effect": effect,
             "foot": "AI voice", "map": map_shape(),
             "theme": {"top": _hex(theme.bg_top), "bottom": _hex(theme.bg_bottom),
                       "accent": _hex(theme.accent)}}

@@ -327,7 +327,7 @@ def write_script(llm, model: str, cand: Candidate) -> RewrittenPost:
                 headline_te=str(data["headline_te"]).strip(), points_te=[str(p).strip() for p in data["points_te"]],
                 caption_te=str(data["caption_te"]).strip(), hashtags=[str(h) for h in data["hashtags"]],
                 source_credit="", topic=topic, headline_style="statement", badge=BADGE, ticker_tag=TICKER,
-                effect="education" if cand.kind == "tech" else None)
+                effect="tech" if cand.kind == "tech" else None)
         except LLM_AUTH_ERRORS:
             raise
         except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
