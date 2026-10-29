@@ -6,8 +6,9 @@ import dataclasses
 import os
 import sys
 import tempfile
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -106,9 +107,16 @@ def _parser() -> argparse.ArgumentParser:
                    ).add_argument("url")
     listen = sub.add_parser("listen", help="long-poll Telegram and act on taps within seconds")
     listen.add_argument("--minutes", type=float, default=340.0, help="stop after this many minutes")
+    listen.add_argument("--post", action="store_true",
+                        help="also run the posting pipeline at every :00 and :30 (UTC), so drafts do not "
+                             "depend on GitHub's unreliable cron")
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
     return p
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _publish_pass(settings: Settings, deps: Deps) -> None:
@@ -118,8 +126,27 @@ def _publish_pass(settings: Settings, deps: Deps) -> None:
         print(f"error: {e}", file=sys.stderr, flush=True)
 
 
+def _posting_run(settings: Settings, builder: Callable[[], Deps] | None) -> None:
+    """One posting run, in a background thread so taps keep being handled while it works.
+    A failure here is printed and never takes the listener down."""
+    try:
+        run_deps = (builder or (lambda: build_deps(settings, os.environ, purpose="run")))()
+        summary = pipeline.run_once(settings, run_deps)
+        print("post: " + _fmt(summary), flush=True)
+        for e in summary.errors:
+            print(f"post error: {e}", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"listen: posting run failed: {_describe(exc, os.environ)}", file=sys.stderr, flush=True)
+
+
+def _next_half_hour(now: datetime) -> datetime:
+    base = now.replace(second=0, microsecond=0)
+    return base.replace(minute=30) if now.minute < 30 else (base.replace(minute=0) + timedelta(hours=1))
+
+
 def _listen(args, settings: Settings, deps: Deps, *, clock: Callable[[], float] = time.monotonic,
-            sleep: Callable[[float], None] = time.sleep) -> int:
+            sleep: Callable[[float], None] = time.sleep, wall: Callable[[], datetime] = _now,
+            run_deps_builder: Callable[[], Deps] | None = None) -> int:
     """Hold a Telegram long poll open so a tap is handled within seconds instead of at the next
     scheduled run. The database is touched only when Telegram reports a new update, so an idle
     listener does not keep a serverless database awake. A getUpdates 409 means another poller
@@ -135,7 +162,16 @@ def _listen(args, settings: Settings, deps: Deps, *, clock: Callable[[], float] 
 
     current = offset()
     failures = 0
+    post = bool(getattr(args, "post", False))
+    worker: threading.Thread | None = None
+    next_post = _next_half_hour(wall()) if post else None
     while clock() < end:
+        if next_post is not None and wall() >= next_post:
+            next_post = _next_half_hour(wall())
+            if worker is None or not worker.is_alive():  # never two posting runs at once
+                worker = threading.Thread(target=_posting_run, daemon=True,
+                                          args=(settings, run_deps_builder))
+                worker.start()
         try:
             updates = deps.telegram.call("getUpdates", offset=current, timeout=20,
                                          allowed_updates=["callback_query", "message"]) or []
@@ -204,10 +240,6 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
         token = publish.refresh_token(deps.instagram, deps.engine, now)
         print(f"token refreshed; {publish.token_days_left(token, now)} days left")
     return 0
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _images_command(args, env: Mapping[str, str]) -> int:

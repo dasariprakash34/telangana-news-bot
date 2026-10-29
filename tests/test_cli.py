@@ -227,3 +227,43 @@ def test_listen_acts_only_when_telegram_reports_an_update(engine, monkeypatch):
     code = cli._listen(args, cli.Settings(), deps, clock=lambda: next(ticks) * 10.0, sleep=lambda s: None)
     assert code == 0
     assert len(passes) == 2  # one startup pass + one for the single update; idle polls cost no pass
+
+
+def test_next_half_hour_boundaries():
+    from datetime import timedelta
+    t = datetime(2026, 10, 29, 3, 10, 5, tzinfo=timezone.utc)
+    assert cli._next_half_hour(t) == datetime(2026, 10, 29, 3, 30, tzinfo=timezone.utc)
+    assert cli._next_half_hour(t.replace(minute=30)) == datetime(2026, 10, 29, 4, 0, tzinfo=timezone.utc)
+    assert cli._next_half_hour(t.replace(hour=23, minute=45)) == datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)
+
+
+def test_listen_post_runs_pipeline_each_half_hour_without_blocking_taps(engine, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from tgnews import gate
+
+    monkeypatch.setattr(cli.pipeline, "publish_approved", lambda s, d: pipeline.PublishSummary())
+    runs = []
+    done = threading.Event()
+
+    def fake_run_once(settings, deps):
+        runs.append(1)
+        done.set()
+        return pipeline.RunSummary()
+
+    monkeypatch.setattr(cli.pipeline, "run_once", fake_run_once)
+
+    class Tg:
+        def call(self, method, **kw):
+            return []
+
+    ticks = iter(range(0, 1000))
+    wall = iter([datetime(2026, 10, 29, 3, 29, tzinfo=timezone.utc),   # sets next_post = 03:30
+                 datetime(2026, 10, 29, 3, 29, 30, tzinfo=timezone.utc),  # not yet
+                 datetime(2026, 10, 29, 3, 30, 1, tzinfo=timezone.utc),   # due -> one run
+                 datetime(2026, 10, 29, 3, 30, 1, tzinfo=timezone.utc)] + [datetime(2026, 10, 29, 3, 30, 2, tzinfo=timezone.utc)] * 50)
+    deps = SimpleNamespace(engine=engine, telegram=Tg())
+    cli._listen(SimpleNamespace(minutes=1, post=True), cli.Settings(), deps,
+                clock=lambda: next(ticks) * 10.0, sleep=lambda s: None, wall=lambda: next(wall),
+                run_deps_builder=lambda: SimpleNamespace())
+    assert done.wait(5) and len(runs) == 1

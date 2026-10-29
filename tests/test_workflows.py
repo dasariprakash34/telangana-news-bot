@@ -49,6 +49,8 @@ def assert_valid_tgnews_line(where: str, line: str, valid: set[str]) -> None:
         allowed = [[], ["--ignore-slots"]]
     elif tokens[1] == "dry-run":
         allowed = [["--out", rest[1]]] if len(rest) == 2 and rest[0] == "--out" else []
+    elif tokens[1] == "listen":
+        allowed = [["--post"]]  # the listener also runs the posting pipeline
     else:
         allowed = [[]]
     assert rest in allowed, f"{where}: unexpected arguments in {line!r}"
@@ -146,7 +148,7 @@ def test_post_cron_matches_default_time_slots():
 def test_listener_runs_listen_then_restarts_itself():
     doc = load(WF_DIR / LISTENER)
     lines = [l for l in run_lines(doc) if l.startswith(("tgnews ", "gh "))]
-    assert lines[0] == "tgnews listen"
+    assert lines[0] == "tgnews listen --post"
     assert lines[1].startswith("gh workflow run telegram-listener.yml ")
     job = doc["jobs"]["listen"]
     assert job["timeout-minutes"] > 340 / 1 * 1  # longer than `tgnews listen --minutes` default (340)
@@ -299,7 +301,8 @@ def test_llm_env_only_passed_where_the_command_needs_it():
                 line = step.get("run", "").strip()
                 if line.startswith("tgnews "):
                     has = llm_env & set(step.get("env") or {})
-                    assert (line.split()[1] in cli._NEEDS_LLM) == bool(has), f"{path.name}: {line}"
+                    assert (line.split()[1] in cli._NEEDS_LLM or line == "tgnews listen --post") == bool(has), \
+                        f"{path.name}: {line}"
 
 
 def test_llm_secrets_vs_variables_mapping():
@@ -326,7 +329,8 @@ def test_image_storage_env_only_where_needed():
                 line = step.get("run", "").strip()
                 if line.startswith("tgnews "):
                     has = images & set(step.get("env") or {})
-                    assert bool(has) == (line.split()[1] in {"run", "prune-images"}), f"{path.name}: {line}"
+                    assert bool(has) == (line.split()[1] in {"run", "prune-images"} or line == "tgnews listen --post"), \
+                        f"{path.name}: {line}"
     assert not STORAGE_ENV & required_env("prune-images")
 
 
