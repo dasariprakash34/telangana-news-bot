@@ -216,6 +216,7 @@ def test_daily_run_makes_a_reel_draft_and_never_publishes(tmp_path):
     note = [p for m, p in deps.tg.calls if m == "sendMessage"][-1]["text"]
     assert "Approve it before 7 PM IST" in note
     assert deps.made[0].badge == viral.BADGE and deps.made[0].ticker_tag == viral.TICKER
+    assert deps.made[0].effect is None  # a trends topic gets its scene from its own words (cricket, space...)
     assert db.get_kv(deps.engine, "viral_day:20261029") == str(out.post_id)
 
 
