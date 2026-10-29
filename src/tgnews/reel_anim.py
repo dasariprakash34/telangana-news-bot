@@ -50,15 +50,14 @@ def caption_size(text: str, headline: bool) -> int:
     return 92 if n <= 50 else 80 if n <= 90 else 68  # the page shrinks it further to fit the card
 
 
-def scenes_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> list[dict]:
+def scenes_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> list[dict]:  # noqa: ARG001
     """One scene per sentence: the headline (on the 3D card), each key point, then the closing line.
     `say` is exactly what the voice reads; `words` is filled in later with the voice's word times."""
     points = [p.strip() for p in post.points_te if p.strip()]
     if not points:
         raise ReelUnavailable("a reel needs at least one key point")
     head = post.headline_te.strip()
-    credit = (post.source_credit or "").strip()
-    closing = f"మూలం: {credit}. {CTA}." if require_credit and credit else f"{CTA}."
+    closing = f"{CTA}."  # the reel never reads or shows the source line
     sayings = [("headline", head), *[("point", p) for p in points], ("outro", closing)]
     total = len(sayings)
     scenes = []
@@ -67,6 +66,29 @@ def scenes_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> 
                        "num": i if kind == "point" else 0,
                        "size": caption_size(text, kind == "headline")})
     return scenes
+
+
+_RAIN = ("వర్ష", "వాన", "వరద", "తుఫాన", "తుపాన", "జలమయ", "ముంపు", "పిడుగు")
+_HEAT = ("ఎండ", "వడగాల్", "వడదెబ్బ", "ఉష్ణోగ్రత", "వేడి")
+_COLD = ("చలి", "పొగమంచు", "మంచు")
+_TOPIC_EFFECT = {"politics": "politics", "crime": "crime", "weather": "fog", "jobs": "jobs",
+                 "farming": "farming", "sports": "sports", "education": "education",
+                 "health": "health", "business": "business", "other": "other"}
+
+
+def effect_for(post: RewrittenPost) -> str:
+    """The background effect that fits the news: rain, heat or cold from the headline words first (a
+    farming story about rain still gets rain), otherwise the topic's own effect."""
+    head = post.headline_te
+    for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
+        if any(w in head for w in words):
+            return name
+    text = head + " " + " ".join(post.points_te)
+    if post.topic == "weather":
+        for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
+            if any(w in text for w in words):
+                return name
+    return _TOPIC_EFFECT.get(post.topic, "other")
 
 
 def even_words(text: str, seconds: float) -> list[dict]:
@@ -109,9 +131,8 @@ def map_shape() -> dict:
 
 def meta_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> dict:
     theme = PALETTE.get(post.topic, DEFAULT_THEME)
-    credit = (post.source_credit or "").strip()
     return {"label": brand, "chip": TOPIC_LABEL.get(post.topic, TOPIC_LABEL["other"]),
-            "tag": TICKER_TAG, "credit": f"మూలం: {credit}" if require_credit and credit else "",
+            "tag": TICKER_TAG, "ticker": brand, "effect": effect_for(post),
             "foot": "AI voice", "map": map_shape(),
             "theme": {"top": _hex(theme.bg_top), "bottom": _hex(theme.bg_bottom),
                       "accent": _hex(theme.accent)}}

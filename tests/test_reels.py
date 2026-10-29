@@ -385,21 +385,37 @@ def test_one_scene_per_sentence_headline_points_then_closing():
     assert [s["kind"] for s in scenes] == ["headline", "point", "point", "point", "outro"]
     assert [s["say"] for s in scenes[:4]] == ["హైదరాబాద్‌లో భారీ వర్షం", "మొదటి అంశం", "రెండో అంశం", "మూడో అంశం"]
     assert [s["num"] for s in scenes] == [0, 1, 2, 3, 0]
-    assert scenes[-1]["say"].startswith("మూలం: The Hindu.") and "ఫాలో" in scenes[-1]["say"]
+    assert "ఫాలో" in scenes[-1]["say"] and "మూలం" not in scenes[-1]["say"]  # the reel never reads the source
     assert scenes[0]["first"] and not scenes[1]["first"] and scenes[2]["total"] == 5
     assert all(s["size"] >= 56 for s in scenes)
 
 
-def test_scenes_without_credit_do_not_read_one():
-    scenes = reel_anim.scenes_for(post(), "Brand", require_credit=False)
-    assert "మూలం" not in scenes[-1]["say"]
-    assert reel_anim.meta_for(post(), "Brand", require_credit=False)["credit"] == ""
+def test_reel_never_shows_or_reads_the_source_even_when_credit_is_required():
+    for need in (True, False):
+        scenes = reel_anim.scenes_for(post(), "Brand", require_credit=need)
+        assert all("మూలం" not in s["say"] and "The Hindu" not in s["say"] for s in scenes)
+        m = reel_anim.meta_for(post(), "Brand", require_credit=need)
+        assert "The Hindu" not in json.dumps(m, ensure_ascii=False) and m["ticker"] == "Brand"
+
+
+def test_effect_follows_the_news_words_then_the_topic():
+    def fx(head, topic, points=("అంశం",)):
+        return reel_anim.effect_for(replace(post(points=points), headline_te=head, topic=topic))
+    assert fx("హైదరాబాద్‌లో భారీ వర్షం", "weather") == "rain"
+    assert fx("పంటలను ముంచిన వరద", "farming") == "rain"          # a farming story about a flood
+    assert fx("రాష్ట్రంలో ఎండలు మండుతున్నాయి", "weather") == "heat"
+    assert fx("ఉదయం పొగమంచు", "weather") == "fog"
+    assert fx("వాతావరణ సూచన", "weather", points=("రేపు వర్షం పడొచ్చు",)) == "rain"  # from the points
+    assert fx("దొంగతనం కేసు", "crime") == "crime"
+    assert fx("రైతులకు సాయం", "farming") == "farming"
+    assert fx("ఎన్నికల ప్రచారం", "politics") == "politics"
+    assert fx("ఏదో వార్త", "nonsense") == "other"
 
 
 def test_meta_uses_topic_theme_ticker_and_map():
     m = reel_anim.meta_for(post(), "Brand")
     assert m["theme"]["accent"] == "#64c8ff" and m["chip"] == "వాతావరణం" and m["label"] == "Brand"
-    assert m["credit"] == "మూలం: The Hindu" and m["tag"] == "తాజా వార్త"
+    assert m["tag"] == "తాజా వార్త" and m["effect"] == "rain"
     assert m["map"]["d"].startswith("M") and m["map"]["d"].endswith("Z") and m["map"]["h"] > 100
     assert 0 < m["map"]["hx"] < 1000
 
