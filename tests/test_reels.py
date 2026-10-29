@@ -380,30 +380,42 @@ def test_reel_style_setting():
         Settings.from_env({"REEL_STYLE": "fancy"})
 
 
-def test_scenes_for_has_3d_headline_cards_and_closing():
+def test_one_scene_per_sentence_headline_points_then_closing():
     scenes = reel_anim.scenes_for(post(), "Telangana News", require_credit=True)
-    assert [s["style"] for s in scenes] == ["three", "steps", "steps", "title"]
-    assert scenes[0]["head"] == "హైదరాబాద్‌లో భారీ వర్షం" and scenes[0]["count"] == 3
-    assert scenes[0]["sub"] == "వాతావరణం"                      # the topic label
-    assert scenes[1]["items"] == ["మొదటి అంశం", "రెండో అంశం"] and scenes[1]["start"] == 0
-    assert scenes[2]["items"] == ["మూడో అంశం"] and scenes[2]["start"] == 2
-    assert scenes[-1]["say"].startswith("మూలం: The Hindu.") and scenes[-1]["sub"] == "మూలం: The Hindu"
-    assert all(s["min"] >= 3 for s in scenes)                  # each scene holds long enough to animate
+    assert [s["kind"] for s in scenes] == ["headline", "point", "point", "point", "outro"]
+    assert [s["say"] for s in scenes[:4]] == ["హైదరాబాద్‌లో భారీ వర్షం", "మొదటి అంశం", "రెండో అంశం", "మూడో అంశం"]
+    assert [s["num"] for s in scenes] == [0, 1, 2, 3, 0]
+    assert scenes[-1]["say"].startswith("మూలం: The Hindu.") and "ఫాలో" in scenes[-1]["say"]
+    assert scenes[0]["first"] and not scenes[1]["first"] and scenes[2]["total"] == 5
+    assert all(s["size"] >= 56 for s in scenes)
 
 
 def test_scenes_without_credit_do_not_read_one():
     scenes = reel_anim.scenes_for(post(), "Brand", require_credit=False)
-    assert "మూలం" not in scenes[-1]["say"] and scenes[-1]["sub"] == "Brand"
+    assert "మూలం" not in scenes[-1]["say"]
+    assert reel_anim.meta_for(post(), "Brand", require_credit=False)["credit"] == ""
 
 
-def test_meta_uses_the_topic_theme():
+def test_meta_uses_topic_theme_ticker_and_map():
     m = reel_anim.meta_for(post(), "Brand")
     assert m["theme"]["accent"] == "#64c8ff" and m["chip"] == "వాతావరణం" and m["label"] == "Brand"
+    assert m["credit"] == "మూలం: The Hindu" and m["tag"] == "తాజా వార్త"
+    assert m["map"]["d"].startswith("M") and m["map"]["d"].endswith("Z") and m["map"]["h"] > 100
+    assert 0 < m["map"]["hx"] < 1000
+
+
+def test_word_times_come_from_the_voice_or_are_spread_evenly():
+    spoken = [(0.09, 0.7, "హైదరాబాద్"), (0.84, 0.3, "భారీ")]
+    assert reel_anim.timed_words(spoken, "x", 2.0) == [
+        {"t": 0.09, "d": 0.7, "w": "హైదరాబాద్"}, {"t": 0.84, "d": 0.3, "w": "భారీ"}]
+    even = reel_anim.timed_words(None, "ఒకటి రెండు మూడు", 3.3)
+    assert [w["w"] for w in even] == ["ఒకటి", "రెండు", "మూడు"]
+    assert even[0]["t"] == 0.1 and even[0]["t"] < even[1]["t"] < even[2]["t"] < 3.3
 
 
 class FakeBrowser:
     def __init__(self):
-        self.setups, self.frames = [], 0
+        self.specs, self.frames = [], 0
 
     def __enter__(self):
         return self
@@ -412,28 +424,32 @@ class FakeBrowser:
         return None
 
     def setup(self, spec, meta):
-        self.setups.append(spec["style"])
+        self.specs.append(spec)
 
     def frame(self, t, duration):
         self.frames += 1
         return b"jpeg"
 
 
-def test_render_animated_draws_every_scene_and_joins(tmp_path, tools):
+def test_render_animated_times_each_scene_to_its_own_voice(tmp_path, tools):
     browser, encoded = FakeBrowser(), []
 
+    def voice(text, v, r, path):
+        Path(path).write_bytes(b"mp3")
+        return [(0.1, 0.5, text.split()[0])]  # the voice service's word times
+
     def encoder(ffmpeg, mp3, seg, frames, pad):
-        n = sum(1 for _ in frames)
-        encoded.append((n, round(pad, 2)))
+        encoded.append((sum(1 for _ in frames), round(pad, 2)))
         Path(seg).write_bytes(MP4)
 
     out = reel_anim.render_animated(post(), tmp_path, "Brand", voice="te-IN-MohanNeural", rate="+20%",
-                                    tts=tools.tts, run=tools.run, browser_factory=lambda: browser,
+                                    tts=voice, run=tools.run, browser_factory=lambda: browser,
                                     encoder=encoder)
-    assert out[0].is_file() and browser.setups == ["three", "steps", "steps", "title"]
-    # voice is 3.5 s: scenes with a longer minimum are padded with silence up to it
-    assert [e[0] for e in encoded] == [math.ceil(4.6 * 24), math.ceil(3.9 * 24), math.ceil(3.9 * 24), math.ceil(3.9 * 24)]
-    assert encoded[0][1] == pytest.approx(1.1)
+    assert out[0].is_file() and len(browser.specs) == 5
+    assert browser.specs[0]["words"] == [{"t": 0.1, "d": 0.5, "w": "హైదరాబాద్‌లో"}]
+    assert browser.specs[1]["words"][0]["w"] == "మొదటి"
+    # 3.5 s of voice + the 0.2 s beat per scene, no idle holding: scene length follows the sentence
+    assert encoded == [(math.ceil(3.7 * 24), 0.2)] * 5
     assert [c for c in tools.cmds if "ffmpeg" in c[0]][-1][-1].endswith(".mp4")  # the join
 
 

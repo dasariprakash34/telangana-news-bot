@@ -68,22 +68,36 @@ def _run(cmd: list[str]) -> str:
     return res.stdout
 
 
-def edge_tts_voice(text: str, voice: str, rate: str, path: Path) -> None:
-    """Write `text` as an MP3 with a Microsoft Edge neural voice (free, unofficial service)."""
+def edge_tts_voice(text: str, voice: str, rate: str, path: Path) -> list[tuple[float, float, str]]:
+    """Write `text` as an MP3 with a Microsoft Edge neural voice (free, unofficial service) and
+    return the spoken words as (start seconds, duration seconds, word), so on-screen text can be
+    timed exactly to the voice."""
     try:
         import edge_tts
     except ImportError:
         raise ReelUnavailable("edge-tts is not installed") from None
 
-    async def go() -> None:
-        await edge_tts.Communicate(text, voice, rate=rate).save(str(path))
+    async def go() -> list[tuple[float, float, str]]:
+        try:
+            comm = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
+        except TypeError:  # older edge-tts: word boundaries are the default
+            comm = edge_tts.Communicate(text, voice, rate=rate)
+        audio, words = bytearray(), []
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                audio.extend(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                words.append((chunk["offset"] / 1e7, chunk["duration"] / 1e7, chunk["text"]))
+        Path(path).write_bytes(bytes(audio))
+        return words
 
     try:
-        asyncio.run(go())
+        words = asyncio.run(go())
     except Exception as exc:  # network, voice name, empty audio...
         raise ReelUnavailable(f"voice generation failed ({type(exc).__name__})") from None
-    if not path.is_file() or path.stat().st_size == 0:
+    if not Path(path).is_file() or Path(path).stat().st_size == 0:
         raise ReelUnavailable("voice generation produced no audio")
+    return words
 
 
 # -- frames -------------------------------------------------------------------

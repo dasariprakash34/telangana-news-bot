@@ -23,7 +23,7 @@ tgnews = "tgnews.cli:main"
 dev = ["pytest"]
 postgres = ["psycopg[binary]"]
 anthropic = ["anthropic"]
-reels = ["edge-tts", "websocket-client"]
+reels = ["edge-tts>=7", "websocket-client"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
