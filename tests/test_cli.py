@@ -258,10 +258,9 @@ def test_listen_post_runs_pipeline_each_half_hour_without_blocking_taps(engine, 
             return []
 
     ticks = iter(range(0, 1000))
-    wall = iter([datetime(2026, 10, 29, 3, 29, tzinfo=timezone.utc),   # sets next_post = 03:30
-                 datetime(2026, 10, 29, 3, 29, 30, tzinfo=timezone.utc),  # not yet
-                 datetime(2026, 10, 29, 3, 30, 1, tzinfo=timezone.utc),   # due -> one run
-                 datetime(2026, 10, 29, 3, 30, 1, tzinfo=timezone.utc)] + [datetime(2026, 10, 29, 3, 30, 2, tzinfo=timezone.utc)] * 50)
+    t = datetime(2026, 10, 29, 3, 29, tzinfo=timezone.utc)
+    wall = iter([t,  # start: next_post = now -> posts straight away
+                 t, t, t] + [datetime(2026, 10, 29, 3, 29, 5, tzinfo=timezone.utc)] * 50)
     deps = SimpleNamespace(engine=engine, telegram=Tg())
     cli._listen(SimpleNamespace(minutes=1, post=True), cli.Settings(), deps,
                 clock=lambda: next(ticks) * 10.0, sleep=lambda s: None, wall=lambda: next(wall),

@@ -164,7 +164,7 @@ def _listen(args, settings: Settings, deps: Deps, *, clock: Callable[[], float] 
     failures = 0
     post = bool(getattr(args, "post", False))
     worker: threading.Thread | None = None
-    next_post = _next_half_hour(wall()) if post else None
+    next_post = wall() if post else None  # post straight away on start, then every :00 and :30
     while clock() < end:
         if next_post is not None and wall() >= next_post:
             next_post = _next_half_hour(wall())
