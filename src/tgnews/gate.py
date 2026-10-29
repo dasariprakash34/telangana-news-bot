@@ -6,9 +6,10 @@ API error descriptions are scrubbed of the token. Only the configured chat id is
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -27,6 +28,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 API_BASE = "https://api.telegram.org"
 KV_OFFSET = "tg_update_offset"
+KV_CONTENT_PREFIX = "post_content:"  # post_content:<post_id> -> JSON of the poster text
 KV_MSG_PREFIX = "tg_msg:"  # tg_msg:<telegram message_id> -> post_id (draft + edit-prompt messages)
 
 _ACTIONS = {"a": "approve", "r": "reject", "e": "edit"}
@@ -86,6 +88,9 @@ class TelegramClient:
 
 
 # -- sending ----------------------------------------------------------------
+Redraw = Callable[[int, RewrittenPost, str], list[str]]  # (post_id, post, format) -> public URLs
+
+
 def _send_draft_message(client: TelegramClient, post_id: int, caption: str) -> Any:
     keyboard = {"inline_keyboard": [[
         {"text": "Approve", "callback_data": f"a:{post_id}"},
@@ -95,7 +100,7 @@ def _send_draft_message(client: TelegramClient, post_id: int, caption: str) -> A
     return client.call(
         "sendMessage", chat_id=client.chat_id, reply_markup=keyboard,
         text=f"Draft post #{post_id}\n\n{caption}\n\n"
-             "To edit the caption: reply to this message with the new caption, then tap Approve.")
+             "To edit the caption: reply with the new caption.\nTo fix the poster text: reply with\nheadline: new headline\n- point 1\n- point 2\nThen tap Approve.")
 
 
 def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: list[str],
@@ -125,9 +130,17 @@ def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: l
             post_id=post_id, caption=caption, slides=list(previews), created_at=db._now()))
 
 
+def save_content(engine: Engine, post_id: int, post: RewrittenPost, fmt: str) -> None:
+    """Remember the poster text so it can be edited and redrawn from Telegram."""
+    db.set_kv(engine, f"{KV_CONTENT_PREFIX}{post_id}", json.dumps({
+        "headline_te": post.headline_te, "points_te": post.points_te, "caption_te": post.caption_te,
+        "hashtags": post.hashtags, "source_credit": post.source_credit, "topic": post.topic,
+        "headline_style": post.headline_style, "fmt": fmt}, ensure_ascii=False))
+
+
 # -- polling ----------------------------------------------------------------
 def poll_decisions(engine: Engine, client: TelegramClient, now: datetime,
-                   require_credit: bool = True) -> list[Decision]:
+                   require_credit: bool = True, redraw: Redraw | None = None) -> list[Decision]:
     """Fetch new Telegram updates and apply them. Only updates from the configured chat are
     honored; others are ignored but still advance the persisted offset so nothing is reprocessed.
     Only posts currently in `draft` state can change. ``now`` is accepted for a uniform job
@@ -143,7 +156,7 @@ def poll_decisions(engine: Engine, client: TelegramClient, now: datetime,
                 d = _handle_callback(engine, client, upd["callback_query"])
             elif "message" in upd or "edited_message" in upd:
                 d = _handle_message(engine, client, upd.get("message") or upd["edited_message"],
-                                    require_credit)
+                                    require_credit, redraw)
             else:
                 d = None
         except Exception as exc:
@@ -220,8 +233,63 @@ def _handle_callback(engine: Engine, client: TelegramClient, cq: Mapping[str, An
     return Decision(post_id=post_id, action=action)
 
 
+_POSTER_RE = re.compile(r"^\s*(?:headline|title|poster|శీర్షిక)\s*[:：]\s*(.*)$", re.I | re.S)
+_BULLET_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s*(.+)$")
+
+
+def parse_poster_edit(text: str) -> tuple[str, list[str] | None] | None:
+    """``headline: X`` (first line) plus optional bullet lines for the points. None when the
+    text is not a poster edit."""
+    m = _POSTER_RE.match(text)
+    if not m:
+        return None
+    lines = [ln for ln in m.group(1).splitlines()]
+    headline = (lines[0] if lines else "").strip()
+    points = []
+    for ln in lines[1:]:
+        b = _BULLET_RE.match(ln)
+        if b:
+            points.append(b.group(1).strip())
+    return headline, (points or None)
+
+
+def _poster_edit(engine: Engine, client: TelegramClient, msg: Mapping[str, Any], post_id: int,
+                 headline: str, points: list[str] | None, require_credit: bool,
+                 redraw: Redraw | None) -> Decision | None:
+    mid = msg.get("message_id")
+    raw = db.get_kv(engine, f"{KV_CONTENT_PREFIX}{post_id}")
+    if redraw is None or raw is None:
+        notify(client, f"Poster text for post #{post_id} cannot be edited here (its original text was "
+                       "not saved). Reject it and wait for the next draft, or edit the caption instead.", mid)
+        return None
+    c = json.loads(raw)
+    post = RewrittenPost(
+        headline_te=headline or c["headline_te"], points_te=points or list(c["points_te"]),
+        caption_te=c["caption_te"], hashtags=list(c["hashtags"]), source_credit=c["source_credit"],
+        topic=c["topic"], headline_style=c["headline_style"])
+    live = db.get_post(engine, post_id)
+    if live is not None and live.caption:
+        post.caption_te = live.caption  # validate against the caption as it stands now
+    problems = validate(post, require_credit)
+    if problems:
+        notify(client, "Poster not changed (old poster kept):\n- " + "\n- ".join(problems), mid)
+        return None
+    try:
+        urls = redraw(post_id, post, c["fmt"])
+    except Exception as exc:
+        log.warning("poster redraw failed for %s: %s", post_id, type(exc).__name__)
+        notify(client, f"Could not redraw the poster for post #{post_id}; the old poster is kept.", mid)
+        return None
+    c.update(headline_te=post.headline_te, points_te=post.points_te)
+    db.set_kv(engine, f"{KV_CONTENT_PREFIX}{post_id}", json.dumps(c, ensure_ascii=False))
+    notify(client, f"Poster updated for post #{post_id}. Check the new preview and tap Approve on the "
+                   "draft below to publish it.", mid)
+    send_draft(engine, client, post_id, urls, (live.caption if live else None) or c["caption_te"])
+    return Decision(post_id=post_id, action="poster")
+
+
 def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, Any],
-                    require_credit: bool = True) -> Decision | None:
+                    require_credit: bool = True, redraw: Redraw | None = None) -> Decision | None:
     if not _from_our_chat(client, msg.get("chat")):
         return None
     target = (msg.get("reply_to_message") or {}).get("message_id")
@@ -240,6 +308,9 @@ def _handle_message(engine: Engine, client: TelegramClient, msg: Mapping[str, An
         notify(client, f"Post #{post_id} is no longer pending (already approved, rejected or expired), "
                        "so your caption was not applied.", msg.get("message_id"))
         return None
+    poster = parse_poster_edit(text)
+    if poster is not None:
+        return _poster_edit(engine, client, msg, post_id, poster[0], poster[1], require_credit, redraw)
     problems = validate(_candidate(post.caption or "", text), require_credit)
     if problems:
         _safe(client, "sendMessage", chat_id=client.chat_id, reply_to_message_id=msg.get("message_id"),

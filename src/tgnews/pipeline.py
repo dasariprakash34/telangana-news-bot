@@ -334,6 +334,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
                            time_slot=ctx.slot, headline_style=style, state=PostState.draft)
     ctx.created += 1
     db.set_post_caption(engine, post_id, caption)
+    gate.save_content(engine, post_id, rewritten, fmt)
     if auto_publish:
         if not db.transition_post_state(engine, post_id, PostState.draft, PostState.approved):
             raise publish.PublishError(f"post {post_id} could not be approved")
@@ -377,6 +378,21 @@ def _dry_output(ctx: _Ctx, story: Story, verdict: Verdict, fmt: str, style: str,
     return True
 
 
+def _redrawer(settings: Settings, deps: Deps, now: datetime):
+    """Callback that re-renders and uploads a post's slides after a poster edit (None when the
+    pipeline cannot upload)."""
+    if deps.upload is None:
+        return None
+
+    def redraw(post_id: int, post: RewrittenPost, fmt: str) -> list[str]:
+        stamp = int(time.time())
+        folder = deps.out_dir / f"edit-{post_id}-{stamp}"
+        paths = deps.render(post, fmt, folder, settings.brand_name)
+        return deps.upload(paths, f"{now:%Y-%m-%d}/edit-{post_id}-{stamp}")
+
+    return redraw
+
+
 # -- publish approved -------------------------------------------------------
 def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
     """Housekeeping, then publish every approved post from its stored slides and caption."""
@@ -392,7 +408,8 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
     if deps.telegram is not None:
         try:
             out.decisions = len(gate.poll_decisions(
-                engine, deps.telegram, now, require_credit=settings.require_source_credit))
+                engine, deps.telegram, now, require_credit=settings.require_source_credit,
+                redraw=_redrawer(settings, deps, now)))
         except gate.TelegramError as exc:
             out.errors.append(f"poll: {sanitize_error(exc)}")
     out.expired = gate.expire_old_drafts(engine, now)

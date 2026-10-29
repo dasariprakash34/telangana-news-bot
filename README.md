@@ -1,6 +1,6 @@
 # tgnews: Telangana news to Telugu Instagram posts
 
-A scheduled job that fetches Telangana news from RSS feeds, rewrites each story as an original Telugu post with source credit (an LLM; free Google Gemini tier by default), renders it as an image or carousel (Pillow), and publishes it through the official Instagram API. In `review` mode every draft goes to a private Telegram chat for Approve, Reject or Edit caption first. A daily job reads post insights and a learning loop adjusts topic, format, time slot and headline style.
+A scheduled job that fetches Telangana news from RSS feeds, rewrites each story as an original Telugu post with source credit (an LLM; free Google Gemini tier by default), renders it as an image or carousel (Pillow), and publishes it through the official Instagram API. In `review` mode every draft goes to a private Telegram chat for Approve, Reject or Edit first: reply with a new caption, or with `headline: ...` plus `- point` lines to fix the poster text (the images are redrawn and a fresh preview with buttons is sent). A daily job reads post insights and a learning loop adjusts topic, format, time slot and headline style.
 
 Design: `docs/superpowers/specs/2026-10-28-telangana-instagram-bot-design.md` (if present in your checkout).
 

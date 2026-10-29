@@ -384,3 +384,67 @@ def test_send_message_failure_after_photos_is_logged(engine, caplog):
     with pytest.raises(TelegramError):
         gate.send_draft(engine, c, 1, PREVIEWS, CAPTION)
     assert "previews were sent" in caplog.text and TOKEN not in caplog.text
+
+
+# -- poster (image text) edits ------------------------------------------------
+from tgnews.rewrite import RewrittenPost  # noqa: E402
+
+HEAD = "హైదరాబాద్‌లో భారీ వర్షం"
+POINTS = ["నగరంలో రోడ్లు జలమయమయ్యాయి", "అధికారులు అప్రమత్తంగా ఉన్నారు"]
+
+
+def _content(engine, pid):
+    post = RewrittenPost(headline_te=HEAD, points_te=POINTS, caption_te=CAPTION, hashtags=["#Hyderabad"],
+                         source_credit="The Hindu", topic="weather", headline_style="statement")
+    gate.save_content(engine, pid, post, "carousel")
+
+
+def test_parse_poster_edit():
+    assert gate.parse_poster_edit("headline: కొత్త శీర్షిక\n- ఒకటి\n2. రెండు") == ("కొత్త శీర్షిక", ["ఒకటి", "రెండు"])
+    assert gate.parse_poster_edit("Headline: కొత్త") == ("కొత్త", None)
+    assert gate.parse_poster_edit("హైదరాబాద్ వార్త") is None
+
+
+def test_poster_edit_redraws_and_resends_draft(engine, fake, draft):
+    _content(engine, draft)
+    seen = []
+
+    def redraw(pid, post, fmt):
+        seen.append((pid, post.headline_te, post.points_te, fmt))
+        return ["https://cdn.example.com/new/1.jpg"]
+
+    fake.updates = [reply(1, "headline: హైదరాబాద్‌లో కుండపోత వర్షం\n- రోడ్లు జలమయం\n- అధికారులు అప్రమత్తం", 101)]
+    out = gate.poll_decisions(engine, fake.client(), NOW, redraw=redraw)
+    assert out == [Decision(post_id=draft, action="poster")]
+    assert seen == [(draft, "హైదరాబాద్‌లో కుండపోత వర్షం", ["రోడ్లు జలమయం", "అధికారులు అప్రమత్తం"], "carousel")]
+    assert fake.of("sendPhoto")[-1]["photo"] == "https://cdn.example.com/new/1.jpg"
+    assert db.latest_draft(engine, draft)["slides"] == ["https://cdn.example.com/new/1.jpg"]
+    assert db.get_post(engine, draft).state == PostState.draft
+    assert json.loads(db.get_kv(engine, gate.KV_CONTENT_PREFIX + str(draft)))["headline_te"].startswith("హైదరాబాద్‌లో కుండపోత")
+
+
+def test_poster_edit_without_content_or_redraw_is_explained(engine, fake, draft):
+    fake.updates = [reply(1, "headline: హైదరాబాద్‌లో కుండపోత వర్షం", 101)]
+    assert gate.poll_decisions(engine, fake.client(), NOW, redraw=lambda *a: ["x"]) == []
+    assert any("cannot be edited" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_invalid_poster_edit_keeps_old_poster(engine, fake, draft):
+    _content(engine, draft)
+    called = []
+    fake.updates = [reply(1, "headline: English only headline", 101)]
+    assert gate.poll_decisions(engine, fake.client(), NOW, redraw=lambda *a: called.append(1) or ["x"]) == []
+    assert not called
+    assert any("old poster kept" in p["text"] for p in fake.of("sendMessage"))
+
+
+def test_redraw_failure_keeps_old_poster(engine, fake, draft):
+    _content(engine, draft)
+
+    def boom(*a):
+        raise RuntimeError("upload down")
+
+    fake.updates = [reply(1, "headline: హైదరాబాద్‌లో కుండపోత వర్షం", 101)]
+    assert gate.poll_decisions(engine, fake.client(), NOW, redraw=boom) == []
+    assert db.latest_draft(engine, draft)["slides"] == PREVIEWS
+    assert any("old poster is kept" in p["text"] for p in fake.of("sendMessage"))
