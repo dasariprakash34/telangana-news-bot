@@ -23,13 +23,13 @@ tgnews = "tgnews.cli:main"
 dev = ["pytest"]
 postgres = ["psycopg[binary]"]
 anthropic = ["anthropic"]
-reels = ["edge-tts"]
+reels = ["edge-tts", "websocket-client"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-tgnews = ["blocklist.yaml", "assets/fonts/*.ttf", "assets/fonts/OFL.txt", "assets/telangana.json"]
+tgnews = ["blocklist.yaml", "assets/fonts/*.ttf", "assets/fonts/OFL.txt", "assets/telangana.json", "assets/reel/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -108,6 +108,7 @@ jobs:
           REEL_DAILY_CAP: ${{ vars.REEL_DAILY_CAP }}
           REEL_VOICE: ${{ vars.REEL_VOICE }}
           REEL_RATE: ${{ vars.REEL_RATE }}
+          REEL_STYLE: ${{ vars.REEL_STYLE }}
           IGNORE_SLOTS: ${{ vars.IGNORE_SLOTS }}
       - name: Publish approved drafts
         if: ${{ !cancelled() }}
@@ -131,3 +132,4 @@ jobs:
           REEL_DAILY_CAP: ${{ vars.REEL_DAILY_CAP }}
           REEL_VOICE: ${{ vars.REEL_VOICE }}
           REEL_RATE: ${{ vars.REEL_RATE }}
+          REEL_STYLE: ${{ vars.REEL_STYLE }}

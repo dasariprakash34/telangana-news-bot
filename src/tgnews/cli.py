@@ -67,7 +67,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     make_reel, up_video = None, None
     if settings.reels_enabled and purpose in ("run", "dry-run"):
         make_reel = functools.partial(reel.render_reel, voice=settings.reel_voice,
-                                      rate=settings.reel_rate,
+                                      rate=settings.reel_rate, style=settings.reel_style,
                                       require_credit=settings.require_source_credit)
         if purpose == "run":
             up_video = build_video_uploader(env)

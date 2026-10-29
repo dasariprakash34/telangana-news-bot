@@ -15,7 +15,8 @@ DEFAULT_ACTIVE_SLOT_COUNT = 36
 DEFAULT_REEL_SHARE = 0.2  # share of new posts made as reels when REELS_ENABLED
 DEFAULT_REEL_DAILY_CAP = 5  # most reels per 24 h (each is a few MB in the images repo)
 DEFAULT_REEL_VOICE = "te-IN-MohanNeural"
-DEFAULT_REEL_RATE = "+15%"
+DEFAULT_REEL_RATE = "+20%"
+DEFAULT_REEL_STYLE = "animated"
 
 
 class ConfigError(ValueError):
@@ -69,6 +70,13 @@ def _parse_voice(raw: str | None) -> str:
     value = (raw or "").strip() or DEFAULT_REEL_VOICE
     if not _VOICE_RE.fullmatch(value):
         raise ConfigError("REEL_VOICE must look like te-IN-MohanNeural")
+    return value
+
+
+def _parse_style(raw: str | None) -> str:
+    value = (raw or "").strip().lower() or DEFAULT_REEL_STYLE
+    if value not in ("animated", "slides"):
+        raise ConfigError("REEL_STYLE must be one of ('animated', 'slides')")
     return value
 
 
@@ -163,6 +171,7 @@ class Settings:
     reel_daily_cap: int = DEFAULT_REEL_DAILY_CAP
     reel_voice: str = DEFAULT_REEL_VOICE
     reel_rate: str = DEFAULT_REEL_RATE
+    reel_style: str = DEFAULT_REEL_STYLE  # "animated" (Chrome) or "slides" (ffmpeg only)
 
     @property
     def effective_per_run_cap(self) -> int:
@@ -192,4 +201,5 @@ class Settings:
             reel_daily_cap=_parse_reel_cap(env.get("REEL_DAILY_CAP")),
             reel_voice=_parse_voice(env.get("REEL_VOICE")),
             reel_rate=_parse_rate(env.get("REEL_RATE")),
+            reel_style=_parse_style(env.get("REEL_STYLE")),
         )

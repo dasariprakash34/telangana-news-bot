@@ -2,6 +2,7 @@
 and the pipeline path with its fallback to images. No network, no ffmpeg, no real voice."""
 import base64
 import json
+import math
 import random
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ def test_reel_settings_default_off():
     s = Settings.from_env({})
     assert s.reels_enabled is False
     assert (s.reel_share, s.reel_daily_cap, s.reel_voice, s.reel_rate) == (
-        0.2, 5, "te-IN-MohanNeural", "+15%")
+        0.2, 5, "te-IN-MohanNeural", "+20%")
 
 
 def test_reel_settings_parse_and_reject():
@@ -105,13 +106,15 @@ def fake_slides(n):
 
 @pytest.fixture
 def tools(monkeypatch):
-    monkeypatch.setattr(reel, "_tool", lambda name: f"/usr/bin/{name}")
+    from tgnews import reel_anim
+    for mod in (reel, reel_anim):  # reel_anim imported its own reference to _tool
+        monkeypatch.setattr(mod, "_tool", lambda name: f"/usr/bin/{name}")
     return Tools()
 
 
 def test_render_reel_builds_segments_and_joins_them(tmp_path, tools):
     out = reel.render_reel(post(), tmp_path, "Brand", voice="te-IN-MohanNeural", rate="+15%",
-                           tts=tools.tts, run=tools.run, render_slides=fake_slides(3))
+                           style="slides", tts=tools.tts, run=tools.run, render_slides=fake_slides(3))
     assert len(out) == 1 and out[0].suffix == ".mp4" and out[0].is_file()
     assert [s[0] for s in tools.spoken][0] == "హైదరాబాద్‌లో భారీ వర్షం"
     assert all(s[1:] == ("te-IN-MohanNeural", "+15%") for s in tools.spoken)
@@ -129,23 +132,23 @@ def test_render_reel_builds_segments_and_joins_them(tmp_path, tools):
 def test_render_reel_too_long_is_unavailable(tmp_path, tools):
     tools.seconds = "40"
     with pytest.raises(ReelUnavailable, match="longer than"):
-        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", tts=tools.tts,
-                         run=tools.run, render_slides=fake_slides(3))
+        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", style="slides",
+                         tts=tools.tts, run=tools.run, render_slides=fake_slides(3))
 
 
 def test_render_reel_voice_failure_is_unavailable(tmp_path, tools):
     def boom(*a):
         raise ReelUnavailable("voice generation failed (ConnectionError)")
     with pytest.raises(ReelUnavailable, match="voice generation failed"):
-        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", tts=boom,
-                         run=tools.run, render_slides=fake_slides(3))
+        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", style="slides",
+                         tts=boom, run=tools.run, render_slides=fake_slides(3))
 
 
 def test_missing_ffmpeg_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.delenv("FFMPEG", raising=False)
     monkeypatch.setattr(reel.shutil, "which", lambda name: None)
     with pytest.raises(ReelUnavailable, match="ffmpeg is not installed"):
-        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%")
+        reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", style="slides")
 
 
 # -- Instagram Reels container ---------------------------------------------------------------------
@@ -364,3 +367,97 @@ def test_poster_edit_is_refused_for_reels(engine, tmp_path):
     redraw = pipeline._redrawer(reel_settings(), deps, NOW)
     with pytest.raises(ReelUnavailable):
         redraw(1, post(), "reel")
+
+
+# -- animated style ---------------------------------------------------------------------------------
+from tgnews import reel_anim  # noqa: E402
+
+
+def test_reel_style_setting():
+    assert Settings.from_env({}).reel_style == "animated"
+    assert Settings.from_env({"REEL_STYLE": "SLIDES"}).reel_style == "slides"
+    with pytest.raises(ConfigError):
+        Settings.from_env({"REEL_STYLE": "fancy"})
+
+
+def test_scenes_for_has_3d_headline_cards_and_closing():
+    scenes = reel_anim.scenes_for(post(), "Telangana News", require_credit=True)
+    assert [s["style"] for s in scenes] == ["three", "steps", "steps", "title"]
+    assert scenes[0]["head"] == "హైదరాబాద్‌లో భారీ వర్షం" and scenes[0]["count"] == 3
+    assert scenes[0]["sub"] == "వాతావరణం"                      # the topic label
+    assert scenes[1]["items"] == ["మొదటి అంశం", "రెండో అంశం"] and scenes[1]["start"] == 0
+    assert scenes[2]["items"] == ["మూడో అంశం"] and scenes[2]["start"] == 2
+    assert scenes[-1]["say"].startswith("మూలం: The Hindu.") and scenes[-1]["sub"] == "మూలం: The Hindu"
+    assert all(s["min"] >= 3 for s in scenes)                  # each scene holds long enough to animate
+
+
+def test_scenes_without_credit_do_not_read_one():
+    scenes = reel_anim.scenes_for(post(), "Brand", require_credit=False)
+    assert "మూలం" not in scenes[-1]["say"] and scenes[-1]["sub"] == "Brand"
+
+
+def test_meta_uses_the_topic_theme():
+    m = reel_anim.meta_for(post(), "Brand")
+    assert m["theme"]["accent"] == "#64c8ff" and m["chip"] == "వాతావరణం" and m["label"] == "Brand"
+
+
+class FakeBrowser:
+    def __init__(self):
+        self.setups, self.frames = [], 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return None
+
+    def setup(self, spec, meta):
+        self.setups.append(spec["style"])
+
+    def frame(self, t, duration):
+        self.frames += 1
+        return b"jpeg"
+
+
+def test_render_animated_draws_every_scene_and_joins(tmp_path, tools):
+    browser, encoded = FakeBrowser(), []
+
+    def encoder(ffmpeg, mp3, seg, frames, pad):
+        n = sum(1 for _ in frames)
+        encoded.append((n, round(pad, 2)))
+        Path(seg).write_bytes(MP4)
+
+    out = reel_anim.render_animated(post(), tmp_path, "Brand", voice="te-IN-MohanNeural", rate="+20%",
+                                    tts=tools.tts, run=tools.run, browser_factory=lambda: browser,
+                                    encoder=encoder)
+    assert out[0].is_file() and browser.setups == ["three", "steps", "steps", "title"]
+    # voice is 3.5 s: scenes with a longer minimum are padded with silence up to it
+    assert [e[0] for e in encoded] == [math.ceil(4.6 * 24), math.ceil(3.9 * 24), math.ceil(3.9 * 24), math.ceil(3.9 * 24)]
+    assert encoded[0][1] == pytest.approx(1.1)
+    assert [c for c in tools.cmds if "ffmpeg" in c[0]][-1][-1].endswith(".mp4")  # the join
+
+
+def test_animated_failure_falls_back_to_slideshow(tmp_path, tools):
+    def broken(*a, **k):
+        raise ReelUnavailable("Chrome is not installed")
+    out = reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", tts=tools.tts,
+                           run=tools.run, render_slides=fake_slides(3), animated=broken)
+    assert out[0].is_file() and any("zoompan" in " ".join(c) for c in tools.cmds)
+
+
+def test_animated_is_the_default_style(tmp_path, tools):
+    called = []
+
+    def fake(*a, **k):
+        called.append(1)
+        return [tmp_path / "x.mp4"]
+    reel.render_reel(post(), tmp_path, "B", voice="v-V-x", rate="+0%", animated=fake)
+    assert called == [1]
+
+
+def test_missing_chrome_is_unavailable(monkeypatch):
+    monkeypatch.delenv("CHROME", raising=False)
+    monkeypatch.setattr(reel_anim.shutil, "which", lambda n: None)
+    monkeypatch.setattr(reel_anim, "_MAC_CHROME", "/no/such/chrome")
+    with pytest.raises(ReelUnavailable, match="Chrome is not installed"):
+        reel_anim.find_chrome()

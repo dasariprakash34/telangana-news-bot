@@ -9,6 +9,7 @@ a story from being posted.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import shutil
@@ -26,6 +27,7 @@ FPS = 24
 TAIL_SECONDS = 0.4  # short pause after each slide's sentence
 MAX_REEL_SECONDS = 75.0  # Instagram Reels allow far longer; a news reel should be short anyway
 MAX_ZOOM = 1.06
+log = logging.getLogger(__name__)
 
 
 class ReelUnavailable(RuntimeError):
@@ -104,11 +106,31 @@ def vertical_frame(slide: Path, out: Path) -> Path:
 
 # -- the reel -----------------------------------------------------------------
 def render_reel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND, *, voice: str,
-                rate: str, require_credit: bool = True,
+                rate: str, require_credit: bool = True, style: str = "animated",
                 tts: Callable[[str, str, str, Path], None] = edge_tts_voice,
                 run: Callable[[list[str]], str] = _run,
-                render_slides: Callable = render_carousel) -> list[Path]:
-    """Render one MP4 reel for `post` into `out_dir`; returns [the mp4]. Raises ReelUnavailable."""
+                render_slides: Callable = render_carousel,
+                animated: Callable | None = None) -> list[Path]:
+    """Render one MP4 reel for `post` into `out_dir`; returns [the mp4]. Raises ReelUnavailable.
+
+    style "animated" (default): motion background, sliding cards and a 3D card scene, drawn in
+    headless Chrome (reel_anim.py). If Chrome or the 3D page is unavailable it falls back to the
+    plain "slides" style (the carousel slides with a slow zoom), which needs only ffmpeg."""
+    if style == "animated":
+        from .reel_anim import render_animated  # lazy: reel_anim imports this module
+
+        try:
+            return (animated or render_animated)(post, out_dir, brand, voice=voice, rate=rate,
+                                                 require_credit=require_credit, tts=tts, run=run)
+        except ReelUnavailable as exc:
+            log.warning("animated reel unavailable (%s); making the slideshow reel instead", exc)
+    return _render_slideshow(post, out_dir, brand, voice=voice, rate=rate,
+                             require_credit=require_credit, tts=tts, run=run,
+                             render_slides=render_slides)
+
+
+def _render_slideshow(post: RewrittenPost, out_dir, brand: str, *, voice: str, rate: str,
+                      require_credit: bool, tts, run, render_slides) -> list[Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     ffmpeg, ffprobe = _tool("ffmpeg"), _tool("ffprobe")
