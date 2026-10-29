@@ -267,3 +267,51 @@ def test_cli_daily_viral_runs_the_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(viral, "run_daily", lambda s, d: viral.DailySummary(status="created", post_id=7, kind="tech"))
     code = cli.main(["daily-viral"], {"MODE": "review"}, deps_builder=lambda s, e, purpose: deps)
     assert code == 0 and "status=created kind=tech post_id=7" in capsys.readouterr().out
+
+
+# -- retries and honest error messages ---------------------------------------------------------------------
+def test_transient_llm_errors_are_retried_once_after_a_pause():
+    from tgnews.llm import LLMError, LLMRateLimited
+
+    class Flaky:
+        def __init__(self, *errors):
+            self.errors, self.n = list(errors), 0
+            self.messages = self
+
+        def create(self, **kw):
+            self.n += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            return SimpleNamespace(content=[SimpleNamespace(text="ok")], stop_reason="end_turn")
+
+    sleeps = []
+    llm = Flaky(LLMRateLimited("429"))
+    assert viral._ask(llm, "m", "s", "u", sleep=sleeps.append) == "ok" and llm.n == 2 and sleeps == [45]
+    sleeps.clear()
+    assert viral._ask(Flaky(LLMError("503")), "m", "s", "u", sleep=sleeps.append) == "ok" and sleeps == [8]
+    with pytest.raises(LLMError):  # still failing on the second try: give up
+        viral._ask(Flaky(LLMError("a"), LLMError("b")), "m", "s", "u", sleep=lambda s: None)
+
+
+def test_telegram_note_says_why_a_topic_failed(tmp_path):
+    from tgnews.llm import LLMError
+
+    class Down:
+        def __init__(self):
+            self.messages = self
+
+        def create(self, **kw):
+            raise LLMError("Gemini returned HTTP 503")
+
+    deps = make_deps(tmp_path, Down())
+    deps.llm = Down()
+    import tgnews.viral as v
+    v_sleep = v.time.sleep
+    v.time.sleep = lambda s: None  # no real waiting in the test
+    try:
+        out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
+    finally:
+        v.time.sleep = v_sleep
+    assert out.status == "no_topic" or out.status == "failed"
+    texts = " ".join(p.get("text", "") for m, p in deps.tg.calls if m == "sendMessage")
+    assert "Gemini returned HTTP 503" in texts or out.errors and "Gemini returned HTTP 503" in " ".join(out.errors)
