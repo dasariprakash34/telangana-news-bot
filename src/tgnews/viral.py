@@ -422,7 +422,7 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
                                headline_style=post.headline_style, state=PostState.draft)
         db.set_post_caption(eng, post_id, caption)
         gate.save_content(eng, post_id, post, "reel")
-        gate.send_draft(eng, deps.telegram, post_id, [url], caption)
+        gate.send_draft(eng, deps.telegram, post_id, [url], caption, local_video=video[0])
     except ReelUnavailable as exc:
         _release(eng, story.id)
         return _stop(out, deps, "failed", f"the reel could not be made ({exc})")

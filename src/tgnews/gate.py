@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -87,6 +88,25 @@ class TelegramClient:
         return body.get("result")
 
 
+    def upload(self, method: str, field: str, path, **payload: Any) -> Any:
+        """Send a local file (multipart), for when Telegram cannot fetch a public URL. Limit 50 MB."""
+        url = f"{API_BASE}/bot{self._token}/{method}"
+        try:
+            with open(path, "rb") as fh:
+                resp = self._http.post(url, data={k: str(v) for k, v in payload.items()},
+                                       files={field: (Path(path).name, fh)}, timeout=180)
+        except Exception as exc:
+            raise TelegramError(f"{method} upload failed: {type(exc).__name__}") from None
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        if resp.status_code >= 400 or not isinstance(body, dict) or not body.get("ok"):
+            desc = body.get("description", "") if isinstance(body, dict) else ""
+            raise TelegramError(self._scrub(f"{method} upload failed: HTTP {resp.status_code} {desc}").strip())
+        return body.get("result")
+
+
 # -- sending ----------------------------------------------------------------
 Redraw = Callable[[int, RewrittenPost, str], list[str]]  # (post_id, post, format) -> public URLs
 
@@ -104,13 +124,20 @@ def _send_draft_message(client: TelegramClient, post_id: int, caption: str) -> A
 
 
 def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: list[str],
-               caption: str) -> None:
+               caption: str, local_video: Path | None = None) -> None:
     """Send previews + caption with Approve / Reject / Edit buttons; record the draft row and
     map the Telegram message id to the post so edit replies can be matched."""
     preview_ids: list[int] = []
     if len(previews) == 1 and previews[0].lower().endswith(".mp4"):  # a reel draft
-        sent = client.call("sendVideo", chat_id=client.chat_id, video=previews[0],
-                           supports_streaming=True)
+        try:
+            sent = client.call("sendVideo", chat_id=client.chat_id, video=previews[0],
+                               supports_streaming=True)
+        except TelegramError as exc:
+            if local_video is None:
+                raise
+            log.warning("draft %s: Telegram could not fetch the video URL (%s); uploading the file", post_id, exc)
+            sent = client.upload("sendVideo", "video", local_video, chat_id=client.chat_id,
+                                 supports_streaming="true")
         preview_ids = [sent["message_id"]] if isinstance(sent, Mapping) and "message_id" in sent else []
     elif len(previews) == 1:
         sent = client.call("sendPhoto", chat_id=client.chat_id, photo=previews[0])

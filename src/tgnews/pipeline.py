@@ -335,7 +335,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
     ctx.seq += 1
     if ctx.dry_out is not None:
         return _dry_output(ctx, story, verdict, fmt, style, rewritten, caption)
-    fmt, urls = _make_media(ctx, rewritten, story, fmt)
+    fmt, urls, local_video = _make_media(ctx, rewritten, story, fmt)
     # Reels are new: they always go to Telegram for approval, even in auto mode.
     auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW and fmt != "reel"
     post_id = db.save_post(engine, story_id=story.id, format=fmt, topic=rewritten.topic,
@@ -351,7 +351,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
         return True
     if deps.telegram is not None:
         try:
-            gate.send_draft(engine, deps.telegram, post_id, urls, caption)
+            gate.send_draft(engine, deps.telegram, post_id, urls, caption, local_video=local_video)
         except Exception:
             db.update_post_state(engine, post_id, PostState.failed)  # no way to review it
             raise
@@ -380,7 +380,8 @@ def _reel_wanted(ctx: _Ctx) -> bool:
     return db.count_posts_since(ctx.engine, since, NOT_COUNTED, fmt="reel") < s.reel_daily_cap
 
 
-def _make_media(ctx: _Ctx, rewritten: RewrittenPost, story: Story, fmt: str) -> tuple[str, list[str]]:
+def _make_media(ctx: _Ctx, rewritten: RewrittenPost, story: Story,
+                fmt: str) -> tuple[str, list[str], Path | None]:
     """Render and publish-ready URLs for one post; returns the format actually produced. A reel that
     cannot be made falls back to a carousel, so the story is still posted."""
     deps, folder = ctx.deps, ctx.out_dir / story.id
@@ -388,12 +389,12 @@ def _make_media(ctx: _Ctx, rewritten: RewrittenPost, story: Story, fmt: str) -> 
     if fmt == "reel":
         try:
             video = deps.render_reel(rewritten, folder, ctx.settings.brand_name)
-            return "reel", [deps.upload_video(video[0], prefix)]
+            return "reel", [deps.upload_video(video[0], prefix)], video[0]
         except ReelUnavailable as exc:
             log.warning("story %s: reel unavailable (%s); posting images instead", story.id, exc)
             fmt = "carousel"
     paths = deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
-    return fmt, deps.upload(paths, prefix)
+    return fmt, deps.upload(paths, prefix), None
 
 
 def _dry_output(ctx: _Ctx, story: Story, verdict: Verdict, fmt: str, style: str,

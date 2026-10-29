@@ -558,3 +558,75 @@ def test_the_voice_is_paused_between_scenes(tmp_path, tools):
                               browser_factory=FakeBrowser, encoder=lambda ffmpeg, mp3, seg, frames, pad: Path(seg).write_bytes(b"x"),
                               sleep=pauses.append)
     assert pauses == [reel_anim.VOICE_PAUSE] * 4  # 5 scenes, a pause before every one but the first
+
+
+# -- a new video is not on the CDN yet; Telegram must still get it -----------------------------------------
+def test_wait_until_public_polls_until_the_cdn_serves_the_video():
+    from tgnews.storage_github import wait_until_public
+    answers = [httpx.Response(404), httpx.Response(200, headers={"content-type": "text/html"}),
+               httpx.Response(200, headers={"content-type": "video/mp4"})]
+    sleeps = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: answers.pop(0)))
+    assert wait_until_public("https://cdn.example.com/v.mp4", http=client, sleep=sleeps.append, pause=2.0)
+    assert sleeps == [2.0, 2.0] and not answers
+
+
+def test_wait_until_public_gives_up_without_raising():
+    from tgnews.storage_github import wait_until_public
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    assert wait_until_public("https://cdn.example.com/v.mp4", http=client, sleep=lambda s: None, tries=3) is False
+
+
+def test_upload_video_waits_for_the_cdn_before_returning_the_url(tmp_path):
+    f = tmp_path / "reel.mp4"
+    f.write_bytes(MP4)
+    warmed = []
+    url = store(Gh(), warm=warmed.append).upload_video(f, "p")
+    assert warmed == [url]
+
+
+def test_telegram_gets_the_file_itself_when_it_cannot_fetch_the_url(pub_engine, tmp_path):
+    f = tmp_path / "reel.mp4"
+    f.write_bytes(MP4)
+
+    class Picky(TG):
+        def __init__(self):
+            super().__init__()
+            self.uploads = []
+
+        def call(self, method, **payload):
+            if method == "sendVideo":
+                raise gate.TelegramError("sendVideo failed: HTTP 400 Bad Request: failed to get HTTP URL content")
+            return super().call(method, **payload)
+
+        def upload(self, method, field, path, **payload):
+            self.uploads.append((method, field, Path(path).name))
+            return {"message_id": 99}
+
+    pid = db.save_post(pub_engine, story_id="s1", format="reel", state=PostState.draft)
+    tg = Picky()
+    gate.send_draft(pub_engine, tg, pid, ["https://cdn.example.com/v.mp4"], "cap", local_video=f)
+    assert tg.uploads == [("sendVideo", "video", "reel.mp4")]
+    assert [m for m, _ in tg.calls] == ["sendMessage"]  # the review message still follows
+    with pytest.raises(gate.TelegramError):  # without a local file the original error is raised
+        gate.send_draft(pub_engine, Picky(), pid, ["https://cdn.example.com/v.mp4"], "cap")
+
+
+def test_telegram_client_uploads_a_file_as_multipart_and_hides_the_token(tmp_path):
+    f = tmp_path / "reel.mp4"
+    f.write_bytes(MP4)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 5}})
+
+    client = gate.TelegramClient("SECRET-BOT-TOKEN", "42", http=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert client.upload("sendVideo", "video", f, chat_id="42", supports_streaming="true") == {"message_id": 5}
+    assert b"multipart/form-data" in seen[0].headers["content-type"].encode() and b"reel.mp4" in seen[0].content
+
+    bad = gate.TelegramClient("SECRET-BOT-TOKEN", "42", http=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(400, json={"ok": False, "description": "bad SECRET-BOT-TOKEN"}))))
+    with pytest.raises(gate.TelegramError) as err:
+        bad.upload("sendVideo", "video", f, chat_id="42")
+    assert "SECRET-BOT-TOKEN" not in str(err.value)

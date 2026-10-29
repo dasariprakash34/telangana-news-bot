@@ -107,7 +107,8 @@ class CheckResult:
 
 class GithubImageStore:
     def __init__(self, token: str, repo: str, branch: str = "main", public_base: str | None = None, *,
-                 video_base: str | None = None, http: httpx.Client | None = None, sleep: Callable[[float], None] | None = None,
+                 video_base: str | None = None, warm: Callable[[str], object] | None = None,
+                 http: httpx.Client | None = None, sleep: Callable[[float], None] | None = None,
                  clock: Callable[[], datetime] = _utcnow, unique: Callable[[], str] | None = None,
                  pause: float = 1.0) -> None:
         if not (token or "").strip():
@@ -133,6 +134,7 @@ class GithubImageStore:
         self._clock = clock
         self._unique = unique or (lambda: secrets.token_hex(3))
         self._pause = pause
+        self._warm = warm  # called with a new video's public URL until the CDN serves it (None: skip)
         if video_base is not None:
             video_base = video_base.strip()
             if (not video_base.startswith("https://") or "?" in video_base or "#" in video_base
@@ -157,6 +159,7 @@ class GithubImageStore:
                    (env.get("IMAGES_GH_BRANCH") or "").strip() or "main",
                    (env.get("IMAGES_PUBLIC_BASE") or "").strip() or None,
                    video_base=(env.get("IMAGES_VIDEO_BASE") or "").strip() or None,
+                   warm=kw.pop("warm", wait_until_public),
                    http=kw.pop("http", None) or _default_http(), **kw)
 
     # -- HTTP -----------------------------------------------------------------------------
@@ -245,7 +248,10 @@ class GithubImageStore:
                 raise StorageError(f"unexpected GitHub response (HTTP 200) for {target}: "
                                    "an existing file was updated, which must not happen")
             raise _status_error(resp.status_code, f"uploading {target}")
-        return f"{self.video_base}/{urllib.parse.quote(target)}"
+        url = f"{self.video_base}/{urllib.parse.quote(target)}"
+        if self._warm is not None:
+            self._warm(url)  # a brand-new file is not on the CDN yet; Telegram and Instagram fetch it at once
+        return url
 
     # -- housekeeping ---------------------------------------------------------------------
     def prune(self, older_than_days: int, now: datetime, *, max_files: int = DEFAULT_PRUNE_LIMIT) -> PruneResult:
@@ -323,3 +329,22 @@ def check_public_url(url: str, *, http: httpx.Client | None = None) -> CheckResu
     except httpx.HTTPError as exc:
         raise StorageError(f"could not fetch the URL ({type(exc).__name__})") from None
     return CheckResult(status, ctype, status == 200 and ctype.lower().startswith("image/jpeg"))
+
+
+def wait_until_public(url: str, *, http: httpx.Client | None = None,
+                      sleep: Callable[[float], None] = time.sleep, tries: int = 20,
+                      pause: float = 3.0) -> bool:
+    """Poll a new file's public URL until it answers 200 with a video or image type (the CDN fetches it
+    from GitHub on the first request, which can take a while for a few MB). True when it is ready;
+    False after about a minute, which is not an error: the caller carries on and may still succeed."""
+    for attempt in range(tries):
+        try:
+            with (http or _default_http()).stream("GET", url, follow_redirects=True) as resp:
+                ctype = resp.headers.get("content-type", "").lower()
+                if resp.status_code == 200 and ctype.startswith(("video/", "image/")):
+                    return True
+        except httpx.HTTPError:
+            pass
+        if attempt < tries - 1:
+            sleep(pause)
+    return False
