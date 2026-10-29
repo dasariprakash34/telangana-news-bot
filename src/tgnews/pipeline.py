@@ -35,7 +35,7 @@ from .storage import StorageError
 
 log = logging.getLogger(__name__)
 
-MAX_STORY_AGE = timedelta(hours=18)  # only today's news; yesterday's is skipped
+MAX_STORY_AGE = timedelta(hours=6)  # only fresh, ongoing news
 CAP_WINDOW = timedelta(hours=24)
 # An approved post older than this is never published (stale news; also lets the images repo prune
 # safely: IMAGES_KEEP_DAYS is at least 3 days).
