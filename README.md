@@ -193,3 +193,14 @@ WHERE id = <POST_ID> AND state = 'failed' AND media_id IS NULL
 ```
 
 Check on Instagram first that the post did not go live. This is not offered for posts without a draft row (auto-mode posts, and drafts whose Telegram send failed): they have no stored image URLs, so `publish-approved` would mark them failed again.
+
+## Reels (optional, off by default)
+
+With `REELS_ENABLED=true` some new posts are made as vertical **Telugu-voice Reels** instead of images. The reel reuses the carousel slides (same look), reads the headline and key points aloud with a free Microsoft neural voice (`edge-tts`, no key, an unofficial service that needs internet), zooms slowly, and joins the parts with `ffmpeg`. Nothing is added to a story that does not need it: if `ffmpeg` or the voice service is unavailable, the story is posted as a normal carousel instead.
+
+- Repository variables (all optional): `REELS_ENABLED` (`false` if unset), `REEL_SHARE` (share of new posts, 0 to 1, default `0.2`), `REEL_DAILY_CAP` (most reels per 24 hours, default `5`; each is a few MB in the images repo), `REEL_VOICE` (default `te-IN-MohanNeural`; `te-IN-ShrutiNeural` is the female voice), `REEL_RATE` (speaking speed, default `+15%`), `IMAGES_VIDEO_BASE` (see below).
+- The workflows `post.yml` and `telegram-listener.yml` install `ffmpeg` and the `reels` extra (`edge-tts`). Reels use `STORAGE_PROVIDER=github` only.
+- **Reels always wait for Telegram approval**, even in `auto` mode, until you decide otherwise. The draft preview is the video itself.
+- The MP4 is committed to the images repo under `posts/YYYYMMDD/` and pruned with the images. `raw.githubusercontent.com` serves `.mp4` as `application/octet-stream` (checked 2026-10-29), so reels use the jsDelivr URL `https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH/...` by default, which serves `video/mp4`. Set `IMAGES_VIDEO_BASE` to use another https base. **Instagram accepting that URL is UNVERIFIED: only a real test reel shows it.**
+- Poster-text edits (`headline:` replies) are not available on reels; reject the draft or edit the caption.
+- A reel is made by `src/tgnews/reel.py`; `tgnews dry-run` can render one into the output folder when `REELS_ENABLED=true`.

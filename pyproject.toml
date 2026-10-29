@@ -23,6 +23,7 @@ tgnews = "tgnews.cli:main"
 dev = ["pytest"]
 postgres = ["psycopg[binary]"]
 anthropic = ["anthropic"]
+reels = ["edge-tts"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

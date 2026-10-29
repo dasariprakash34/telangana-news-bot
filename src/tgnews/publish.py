@@ -50,17 +50,27 @@ class Token:
     expires_at: datetime
 
 
-def _validate_urls(urls: list[str]) -> None:
-    if not 1 <= len(urls) <= MAX_CHILDREN:
+REEL_TIMEOUT = 600.0  # Instagram needs longer to process a video than an image
+
+
+def _validate_urls(urls: list[str], kind: str = "images") -> None:
+    if kind == "reel":
+        if len(urls) != 1:
+            raise ValueError(f"a reel needs exactly 1 video URL, got {len(urls)}")
+    elif not 1 <= len(urls) <= MAX_CHILDREN:
         raise ValueError(f"urls must contain 1 to {MAX_CHILDREN} items, got {len(urls)}")
     for u in urls:
         if not isinstance(u, str) or not u.startswith("https://"):
             raise ValueError("every image URL must be an https URL")
 
 
-def _create_container(client: InstagramClient, urls: list[str], caption: str) -> str:
+def _create_container(client: InstagramClient, urls: list[str], caption: str,
+                      kind: str = "images") -> str:
     path = f"{client.ig_user_id}/media"
-    if len(urls) == 1:
+    if kind == "reel":
+        res = client.post(path, media_type="REELS", video_url=urls[0], caption=caption,
+                          share_to_feed="true")
+    elif len(urls) == 1:
         res = client.post(path, image_url=urls[0], caption=caption)
     else:
         children = [client.post(path, image_url=u, is_carousel_item="true")["id"] for u in urls]
@@ -93,9 +103,12 @@ class _ContainerAlreadyPublished(PublishError):
 
 def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramClient, engine, *,
                  sleep: Callable[[float], None] = time.sleep, poll_interval: float = 10.0,
-                 timeout: float = 300.0) -> str:
-    """Publish; returns the Instagram media id. Never calls media_publish more than once."""
-    _validate_urls(urls)
+                 timeout: float = 300.0, kind: str = "images") -> str:
+    """Publish; returns the Instagram media id. Never calls media_publish more than once.
+    `kind` is "images" (one image or a carousel) or "reel" (one public MP4 URL)."""
+    _validate_urls(urls, kind)
+    if kind == "reel":
+        timeout = max(timeout, REEL_TIMEOUT)
     post = db.get_post(engine, post_id)
     if post is None:
         raise PublishError(f"post {post_id} not found")
@@ -111,7 +124,7 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
     # published, so mark failed (conditionally: never overwrite a live post).
     try:
         db.set_post_caption(engine, post_id, caption)
-        container_id = _create_container(client, urls, caption)
+        container_id = _create_container(client, urls, caption, kind)
         db.set_post_container(engine, post_id, container_id)
         _wait_until_finished(client, container_id, sleep, poll_interval, timeout)
     except _ContainerAlreadyPublished as exc:

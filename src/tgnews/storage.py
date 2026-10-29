@@ -123,3 +123,12 @@ def build_uploader(env: Mapping[str, str]):
         return GithubImageStore.from_env(env).upload
     cfg = StorageConfig.from_env(env)
     return lambda paths, prefix: upload(paths, prefix, config=cfg)
+
+
+def build_video_uploader(env: Mapping[str, str]):
+    """Return ``upload_video(path, prefix) -> url`` for Reels. Only the github provider is supported."""
+    if storage_provider(env) != "github":
+        raise StorageError("reels need STORAGE_PROVIDER=github (video upload is not implemented for s3)")
+    from .storage_github import GithubImageStore
+
+    return GithubImageStore.from_env(env).upload_video

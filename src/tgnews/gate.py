@@ -108,7 +108,11 @@ def send_draft(engine: Engine, client: TelegramClient, post_id: int, previews: l
     """Send previews + caption with Approve / Reject / Edit buttons; record the draft row and
     map the Telegram message id to the post so edit replies can be matched."""
     preview_ids: list[int] = []
-    if len(previews) == 1:
+    if len(previews) == 1 and previews[0].lower().endswith(".mp4"):  # a reel draft
+        sent = client.call("sendVideo", chat_id=client.chat_id, video=previews[0],
+                           supports_streaming=True)
+        preview_ids = [sent["message_id"]] if isinstance(sent, Mapping) and "message_id" in sent else []
+    elif len(previews) == 1:
         sent = client.call("sendPhoto", chat_id=client.chat_id, photo=previews[0])
         preview_ids = [sent["message_id"]] if isinstance(sent, Mapping) and "message_id" in sent else []
     elif previews:

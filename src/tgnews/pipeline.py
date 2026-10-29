@@ -28,6 +28,7 @@ from .fetch import FetchReport
 from .llm import LLM_AUTH_ERRORS
 from .instagram import InstagramClient, InstagramError
 from .models import PostState, Story
+from .reel import ReelUnavailable
 from .render import ShapingUnavailable, assert_shaping_available, render_card, render_carousel
 from .rewrite import DEFAULT_MODEL, STYLES, TOPICS, RewriteFailed, RewriteUnavailable, RewrittenPost, rewrite
 from .safety import BlocklistError, Verdict
@@ -45,7 +46,8 @@ FORMATS = learn.FORMATS
 MAX_CAPTION_CHARS = 2200  # Instagram caption limit
 MAX_INFRA_FAILURES = 2  # consecutive infrastructure failures before the run stops
 _PROPAGATE = (BlocklistError, ShapingUnavailable) + LLM_AUTH_ERRORS
-_SAFE_MESSAGE = (InstagramError, publish.PublishError, StorageError, gate.TelegramError, RewriteFailed)
+_SAFE_MESSAGE = (InstagramError, publish.PublishError, StorageError, gate.TelegramError, RewriteFailed,
+                 ReelUnavailable)
 
 
 class PipelineError(Exception):
@@ -63,6 +65,9 @@ class Deps:
     engine: Engine | None = None
     render: Callable[[RewrittenPost, str, Path, str], list[Path]] = _render
     upload: Callable[[list[Path], str], list[str]] | None = None
+    # Reels (only used when REELS_ENABLED): build the MP4, and put it at a public URL
+    render_reel: Callable[[RewrittenPost, Path, str], list[Path]] | None = None
+    upload_video: Callable[[Path, str], str] | None = None
     instagram: InstagramClient | None = None
     telegram: gate.TelegramClient | None = None
     rng_factory: Callable[[], random.Random] = random.Random
@@ -323,14 +328,16 @@ def _process(ctx: _Ctx, story: Story) -> bool:
         return False
     style = learn.choose(engine, "headline_style", STYLES, ctx.rng)
     fmt = learn.choose(engine, "format", FORMATS, ctx.rng)
+    if _reel_wanted(ctx):
+        fmt = "reel"
     rewritten = rewrite(story, deps.llm, style, deps.llm_model, ctx.settings.require_source_credit)
     caption = compose_caption(rewritten)
     ctx.seq += 1
     if ctx.dry_out is not None:
         return _dry_output(ctx, story, verdict, fmt, style, rewritten, caption)
-    paths = deps.render(rewritten, fmt, ctx.out_dir / story.id, ctx.settings.brand_name)
-    urls = deps.upload(paths, f"{ctx.now:%Y-%m-%d}/{story.id}")
-    auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW
+    fmt, urls = _make_media(ctx, rewritten, story, fmt)
+    # Reels are new: they always go to Telegram for approval, even in auto mode.
+    auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW and fmt != "reel"
     post_id = db.save_post(engine, story_id=story.id, format=fmt, topic=rewritten.topic,
                            time_slot=ctx.slot, headline_style=style, state=PostState.draft)
     ctx.created += 1
@@ -359,10 +366,48 @@ def _process(ctx: _Ctx, story: Story) -> bool:
     return True
 
 
+def _reel_wanted(ctx: _Ctx) -> bool:
+    """True when this story should become a reel. Costs no random draw (and so changes nothing
+    about the existing behaviour) unless REELS_ENABLED is on and the reel tools are wired in."""
+    s, d = ctx.settings, ctx.deps
+    if not s.reels_enabled or s.reel_daily_cap <= 0 or d.render_reel is None:
+        return False
+    if ctx.dry_out is None and d.upload_video is None:
+        return False
+    if ctx.rng.random() >= s.reel_share:
+        return False
+    since = ctx.now - CAP_WINDOW
+    return db.count_posts_since(ctx.engine, since, NOT_COUNTED, fmt="reel") < s.reel_daily_cap
+
+
+def _make_media(ctx: _Ctx, rewritten: RewrittenPost, story: Story, fmt: str) -> tuple[str, list[str]]:
+    """Render and publish-ready URLs for one post; returns the format actually produced. A reel that
+    cannot be made falls back to a carousel, so the story is still posted."""
+    deps, folder = ctx.deps, ctx.out_dir / story.id
+    prefix = f"{ctx.now:%Y-%m-%d}/{story.id}"
+    if fmt == "reel":
+        try:
+            video = deps.render_reel(rewritten, folder, ctx.settings.brand_name)
+            return "reel", [deps.upload_video(video[0], prefix)]
+        except ReelUnavailable as exc:
+            log.warning("story %s: reel unavailable (%s); posting images instead", story.id, exc)
+            fmt = "carousel"
+    paths = deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
+    return fmt, deps.upload(paths, prefix)
+
+
 def _dry_output(ctx: _Ctx, story: Story, verdict: Verdict, fmt: str, style: str,
                 rewritten: RewrittenPost, caption: str) -> bool:
     folder = ctx.dry_out / f"{ctx.seq:02d}-{story.id}"
-    ctx.deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
+    if fmt == "reel":
+        try:
+            ctx.deps.render_reel(rewritten, folder, ctx.settings.brand_name)
+        except ReelUnavailable as exc:
+            log.warning("story %s: reel unavailable (%s); rendering images instead", story.id, exc)
+            fmt = "carousel"
+            ctx.deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
+    else:
+        ctx.deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
     (folder / "caption.txt").write_text(caption, encoding="utf-8")
     (folder / "decision.json").write_text(json.dumps({
         "story_id": story.id, "title": story.title, "url": story.url, "mode": ctx.settings.mode,
@@ -386,6 +431,8 @@ def _redrawer(settings: Settings, deps: Deps, now: datetime):
         return None
 
     def redraw(post_id: int, post: RewrittenPost, fmt: str) -> list[str]:
+        if fmt == "reel":
+            raise ReelUnavailable("poster text cannot be edited on a reel; reject it or edit the caption")
         stamp = int(time.time())
         folder = deps.out_dir / f"edit-{post_id}-{stamp}"
         paths = deps.render(post, fmt, folder, settings.brand_name)
@@ -431,7 +478,7 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
                 db.transition_post_state(engine, post.id, PostState.approved, PostState.failed)
                 raise publish.PublishError(f"post {post.id} has no stored slides or caption")
             publish.publish_post(post.id, draft["slides"], post.caption, deps.instagram, engine,
-                                 sleep=deps.sleep)
+                                 sleep=deps.sleep, kind="reel" if post.format == "reel" else "images")
             out.published += 1
             if deps.telegram is not None:
                 gate.notify(deps.telegram, f"Published post #{post.id} on Instagram.")

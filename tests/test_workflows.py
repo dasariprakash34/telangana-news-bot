@@ -122,9 +122,15 @@ class TestEachWorkflow:
 
     def test_installs_postgres_extra_and_shaping_libs(self, path):
         lines = "\n".join(run_lines(load(path)))
-        assert '-e ".[postgres]"' in lines
+        extra = '-e ".[postgres,reels]"' if path.name in REEL_WORKFLOWS else '-e ".[postgres]"'
+        assert extra in lines
         for pkg in ("libraqm0", "libfribidi0", "libharfbuzz0b"):
             assert pkg in lines
+        if path.name in REEL_WORKFLOWS:
+            assert "ffmpeg" in lines  # reels are drawn in the workflows that create drafts
+
+
+REEL_WORKFLOWS = {"post.yml", "telegram-listener.yml"}  # the ones that run `tgnews run` / `listen --post`
 
 
 def test_mode_defaults_to_review():
