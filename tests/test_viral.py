@@ -212,12 +212,12 @@ def test_daily_run_makes_a_reel_draft_and_never_publishes(tmp_path):
     post = db.get_post(deps.engine, out.post_id)
     assert post.format == "reel" and post.state == PostState.draft and "ISRO" in post.caption
     assert deps.tg.calls[0][0] == "sendVideo"
-    assert "/viral-20261029-" in deps.tg.calls[0][1]["video"] and deps.tg.calls[0][1]["video"].endswith("/reel.mp4")
+    assert "/viral-20261029-evening-" in deps.tg.calls[0][1]["video"] and deps.tg.calls[0][1]["video"].endswith("/reel.mp4")
     note = [p for m, p in deps.tg.calls if m == "sendMessage"][-1]["text"]
     assert "Approve it before 7 PM IST" in note
     assert deps.made[0].badge == viral.BADGE and deps.made[0].ticker_tag == viral.TICKER
     assert deps.made[0].effect is None  # a trends topic gets its scene from its own words (cricket, space...)
-    assert db.get_kv(deps.engine, "viral_day:20261029") == str(out.post_id)
+    assert db.get_kv(deps.engine, "viral_day:20261029:evening") == str(out.post_id)
 
 
 def test_only_one_viral_reel_per_day(tmp_path):
@@ -231,8 +231,8 @@ def test_only_one_viral_reel_per_day(tmp_path):
 def test_topic_without_enough_real_articles_is_skipped_with_a_note(tmp_path):
     deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
     out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=lambda url: "")
-    assert out.status == "no_topic" and db.get_kv(deps.engine, "viral_day:20261029") is None
-    assert "skipped today" in deps.tg.calls[-1][1]["text"]
+    assert out.status == "no_topic" and db.get_kv(deps.engine, "viral_day:20261029:evening") is None
+    assert "skipped" in deps.tg.calls[-1][1]["text"] and "evening" in deps.tg.calls[-1][1]["text"]
 
 
 def test_sensitive_topics_are_filtered_before_the_model_sees_them(tmp_path):
@@ -253,7 +253,7 @@ def test_reel_failure_releases_the_topic_and_tells_you(tmp_path):
     out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
     assert out.status == "failed" and "Chrome is not installed" in deps.tg.calls[-1][1]["text"]
     assert not db.story_seen(deps.engine, "https://news-a.example.com/isro")  # can be tried again
-    assert db.get_kv(deps.engine, "viral_day:20261029") is None
+    assert db.get_kv(deps.engine, "viral_day:20261029:evening") is None
 
 
 def test_needs_telegram_because_it_waits_for_approval(tmp_path):
@@ -336,6 +336,13 @@ TWO_TOPICS = TRENDS.replace("</channel>", """<item><title>second topic</title><h
   <ht:news_item_url>https://news-b.example.com/second</ht:news_item_url><ht:news_item_source>News B</ht:news_item_source></ht:news_item></item></channel>""")
 
 
+THREE_TOPICS = TWO_TOPICS.replace("</channel>", """<item><title>third topic</title><ht:approx_traffic>500+</ht:approx_traffic>
+ <ht:news_item><ht:news_item_title>Third story</ht:news_item_title><ht:news_item_snippet>x</ht:news_item_snippet>
+  <ht:news_item_url>https://news-a.example.com/third</ht:news_item_url><ht:news_item_source>News A</ht:news_item_source></ht:news_item>
+ <ht:news_item><ht:news_item_title>Third story again</ht:news_item_title><ht:news_item_snippet>y</ht:news_item_snippet>
+  <ht:news_item_url>https://news-b.example.com/third</ht:news_item_url><ht:news_item_source>News B</ht:news_item_source></ht:news_item></item></channel>""")
+
+
 def test_a_draft_telegram_could_not_send_is_failed_and_a_retry_moves_to_another_topic(tmp_path):
     from tgnews import gate
 
@@ -358,8 +365,62 @@ def test_a_draft_telegram_could_not_send_is_failed_and_a_retry_moves_to_another_
     with pytest.raises(gate.TelegramError):
         viral.run_daily(Settings(), deps, http=trends_client(TWO_TOPICS), fetch_text=facts)
     [failed] = db.list_posts_by_state(deps.engine, PostState.failed)
-    assert failed.format == "reel" and db.get_kv(deps.engine, "viral_day:20261029") is None
+    assert failed.format == "reel" and db.get_kv(deps.engine, "viral_day:20261029:evening") is None
     deps.telegram = good_tg  # next attempt the same day
     deps.llm = LLM('{"index": 0}', script("50"))
     out = viral.run_daily(Settings(), deps, http=trends_client(TWO_TOPICS), fetch_text=facts)
     assert out.status == "created" and out.topic == "second topic"
+
+
+# -- three a day ------------------------------------------------------------------------------------------------
+def test_the_slot_comes_from_the_utc_hour_the_run_starts_in():
+    at = lambda h: datetime(2026, 10, 29, h, 5, tzinfo=timezone.utc)
+    assert viral.slot_for(at(2)) == ("morning", "india", "8 AM")
+    assert viral.slot_for(at(4)) == ("morning", "india", "8 AM")
+    assert viral.slot_for(at(7)) == ("afternoon", "tech", "1 PM")
+    assert viral.slot_for(at(12)) == ("evening", None, "7 PM")
+    assert viral.slot_for(at(23)) == ("evening", None, "7 PM")
+
+
+def test_each_slot_makes_its_own_reel_and_a_slot_runs_once(tmp_path):
+    def facts(url):
+        return FACTS_A if any(w in url for w in ("isro", "second", "third")) else FACTS_B
+
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    made = {}
+    for hour, expect in ((2, "morning"), (7, "afternoon"), (12, "evening")):
+        deps.now = lambda h=hour: datetime(2026, 10, 29, h, 0, tzinfo=timezone.utc)
+        deps.llm = LLM('{"index": 0}', script("50"))
+        out = viral.run_daily(Settings(), deps, http=trends_client(THREE_TOPICS), fetch_text=facts)
+        assert out.status == "created" and out.slot == expect, (hour, out)
+        made[expect] = out.topic
+        again = viral.run_daily(Settings(), deps, http=trends_client(THREE_TOPICS), fetch_text=facts)
+        assert again.status == "already_today"
+    assert len(set(made.values())) == 3  # three different topics: each is excluded once used
+    assert len(db.list_posts_by_state(deps.engine, PostState.draft)) == 3
+    notes = " ".join(p.get("text", "") for m, p in deps.tg.calls if m == "sendMessage")
+    assert "before 8 AM IST" in notes and "before 1 PM IST" in notes and "before 7 PM IST" in notes
+
+
+def test_the_afternoon_prefers_a_tech_topic_when_one_has_enough_facts(tmp_path):
+    items = {1: {"type": "story", "title": "OpenAI ships a new model", "url": "https://tech.example.com/a", "score": 400}}
+
+    def handler(request):
+        u = str(request.url)
+        if "trends.google" in u:
+            return httpx.Response(200, text=TRENDS)
+        if u.endswith("topstories.json"):
+            return httpx.Response(200, json=[1])
+        return httpx.Response(200, json=items[1])
+
+    def facts(url):
+        return FACTS_A * 2 if "tech.example" in url else fake_text(url)
+
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    deps.now = lambda: datetime(2026, 10, 29, 7, 0, tzinfo=timezone.utc)
+    out = viral.run_daily(Settings(), deps, http=httpx.Client(transport=httpx.MockTransport(handler)), fetch_text=facts)
+    assert out.status == "created" and out.kind == "tech"
+    deps.now = lambda: datetime(2026, 10, 29, 2, 0, tzinfo=timezone.utc)
+    deps.llm = LLM('{"index": 0}', script("50"))
+    morning = viral.run_daily(Settings(), deps, http=httpx.Client(transport=httpx.MockTransport(handler)), fetch_text=facts)
+    assert morning.status == "created" and morning.kind == "india"
