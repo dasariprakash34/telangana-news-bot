@@ -315,3 +315,14 @@ def test_telegram_note_says_why_a_topic_failed(tmp_path):
     assert out.status == "no_topic" or out.status == "failed"
     texts = " ".join(p.get("text", "") for m, p in deps.tg.calls if m == "sendMessage")
     assert "Gemini returned HTTP 503" in texts or out.errors and "Gemini returned HTTP 503" in " ".join(out.errors)
+
+
+def test_a_failed_cleanup_never_hides_the_real_error(tmp_path, monkeypatch):
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")), fail_reel=ReelUnavailable("voice down"))
+
+    def broken(engine, story_id):
+        raise RuntimeError("stale connection")
+
+    monkeypatch.setattr(viral.db, "release_story", broken)
+    out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
+    assert out.status == "failed" and "voice down" in deps.tg.calls[-1][1]["text"]

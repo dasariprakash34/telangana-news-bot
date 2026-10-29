@@ -51,7 +51,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     engine = None
     if purpose != "dry-run":
         try:
-            engine = create_engine(settings.database_url)
+            engine = create_engine(settings.database_url, pool_pre_ping=True)  # long reels outlive idle connections
             db.init(engine)
         except Exception:  # URL parsing / driver errors can echo parts of the password
             raise PipelineError("DATABASE_URL is invalid or the database is unreachable") from None

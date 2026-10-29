@@ -460,7 +460,7 @@ def test_render_animated_times_each_scene_to_its_own_voice(tmp_path, tools):
 
     out = reel_anim.render_animated(post(), tmp_path, "Brand", voice="te-IN-MohanNeural", rate="+20%",
                                     tts=voice, run=tools.run, browser_factory=lambda: browser,
-                                    encoder=encoder)
+                                    encoder=encoder, sleep=lambda s: None)
     assert out[0].is_file() and len(browser.specs) == 5
     assert browser.specs[0]["words"] == [{"t": 0.1, "d": 0.5, "w": "హైదరాబాద్‌లో"}]
     assert browser.specs[1]["words"][0]["w"] == "మొదటి"
@@ -537,3 +537,24 @@ def test_voice_gives_up_after_three_tries_with_a_clear_message(tmp_path, monkeyp
     monkeypatch.setitem(sys.modules, "edge_tts", types.SimpleNamespace(Communicate=Communicate))
     with pytest.raises(ReelUnavailable, match=r"RuntimeError\) after 3 tries"):
         reel.edge_tts_voice("x", "v-V-x", "+0%", tmp_path / "a.mp3", sleep=lambda s: None)
+
+
+def test_a_failing_voice_names_the_scene_and_sentence(tmp_path, tools):
+    def tts(text, voice, rate, path):
+        if "రెండవ" in text:
+            raise ReelUnavailable("voice generation failed (NoAudioReceived) after 3 tries")
+        Path(path).write_bytes(b"mp3")
+        return None
+
+    with pytest.raises(ReelUnavailable, match=r"scene 3 of 5 \(\d+ characters, starting .*NoAudioReceived"):
+        reel_anim.render_animated(post(points=("ఒకటి", "రెండవ అంశం", "మూడు")), tmp_path, "B", voice="v-V-x",
+                                  rate="+0%", tts=tts, run=tools.run, browser_factory=FakeBrowser,
+                                  encoder=lambda *a, **k: None, sleep=lambda s: None)
+
+
+def test_the_voice_is_paused_between_scenes(tmp_path, tools):
+    pauses = []
+    reel_anim.render_animated(post(), tmp_path, "B", voice="v-V-x", rate="+0%", tts=tools.tts, run=tools.run,
+                              browser_factory=FakeBrowser, encoder=lambda ffmpeg, mp3, seg, frames, pad: Path(seg).write_bytes(b"x"),
+                              sleep=pauses.append)
+    assert pauses == [reel_anim.VOICE_PAUSE] * 4  # 5 scenes, a pause before every one but the first

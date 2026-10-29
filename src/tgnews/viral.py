@@ -399,6 +399,13 @@ def _stop(out: DailySummary, deps: Deps, status: str, detail: str) -> DailySumma
     return out
 
 
+def _release(eng, story_id: str) -> None:
+    try:
+        db.release_story(eng, story_id)
+    except Exception as exc:  # never hide the real error behind a failed clean-up
+        log.warning("viral: could not release %s (%s)", story_id, type(exc).__name__)
+
+
 def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now: datetime, day: str,
                 out: DailySummary) -> DailySummary:
     eng = deps.engine
@@ -417,10 +424,10 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
         gate.save_content(eng, post_id, post, "reel")
         gate.send_draft(eng, deps.telegram, post_id, [url], caption)
     except ReelUnavailable as exc:
-        db.release_story(eng, story.id)
+        _release(eng, story.id)
         return _stop(out, deps, "failed", f"the reel could not be made ({exc})")
     except Exception:
-        db.release_story(eng, story.id)
+        _release(eng, story.id)
         raise
     db.set_kv(eng, KV_DAY + day, str(post_id))
     gate.notify(deps.telegram, f"Daily viral reel is ready: draft #{post_id} ({cand.kind}: {cand.title[:60]}). "
