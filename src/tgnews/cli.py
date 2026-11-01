@@ -62,7 +62,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     if purpose != "dry-run" and (env.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_CHAT_ID")):
         tg = TelegramClient.from_env(env)
     up = None
-    if purpose == "run":
+    if purpose in ("run", "daily-viral"):
         up = build_uploader(env)
     make_reel, up_video = None, None
     if (settings.reels_enabled and purpose in ("run", "dry-run")) or purpose == "daily-viral":

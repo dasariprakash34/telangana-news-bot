@@ -19,9 +19,9 @@ def engine():
     return e
 
 
-def add(engine, score, fmt="card", topic="politics", slot="09:00", style="question", metrics=True):
+def add(engine, score, fmt="card", topic="politics", slot="09:00", style="question", metrics=True, kind=None):
     pid = db.save_post(engine, story_id="s", format=fmt, topic=topic, time_slot=slot,
-                       headline_style=style)
+                       headline_style=style, kind=kind)
     if metrics:
         db.set_post_metrics(engine, pid, {"score": score})
     return pid
@@ -32,9 +32,9 @@ def fill(engine, n, **kw):
         add(engine, 0.1, **kw)
 
 
-def test_under_30_scored_posts_explores_evenly(engine):
-    fill(engine, 28, fmt="card")
-    add(engine, 0.99, fmt="carousel")  # 29 scored posts, carousel looks best
+def test_under_the_threshold_scored_posts_explores_evenly(engine):
+    fill(engine, learn.SCORED_THRESHOLD - 2, fmt="card")
+    add(engine, 0.99, fmt="carousel")  # one short of the threshold, carousel looks best
     learn.update_learning(engine)
     rng = random.Random(1)
     c = Counter(learn.choose(engine, "format", learn.FORMATS, rng) for _ in range(1000))
@@ -56,10 +56,9 @@ def test_over_30_picks_best_about_80_percent(engine):
     assert 0.88 * 2000 <= c["carousel"] <= 0.92 * 2000
 
 
-def test_options_with_fewer_than_3_posts_never_win(engine):
+def test_options_with_too_few_posts_never_win(engine):
     fill(engine, 32, topic="politics")
-    add(engine, 0.99, topic="crime")
-    add(engine, 0.99, topic="crime")
+    add(engine, 0.99, topic="crime")  # one post: fewer than MIN_N_PER_OPTION
     learn.update_learning(engine)
     rng = random.Random(3)
     picks = Counter(learn.choose(engine, "topic", TOPICS, rng) for _ in range(1000))
@@ -119,9 +118,9 @@ def test_exactly_30_scored_posts_starts_exploiting(engine):
     assert 0.88 * 2000 <= c["carousel"] <= 0.92 * 2000
 
 
-def test_n29_does_not_exploit_even_with_learning_rows(engine):
-    fill(engine, 14, fmt="card")
-    for _ in range(15):
+def test_one_short_of_the_threshold_does_not_exploit_even_with_learning_rows(engine):
+    fill(engine, 5, fmt="card")
+    for _ in range(learn.SCORED_THRESHOLD - 6):
         add(engine, 0.5, fmt="carousel")
     learn.update_learning(engine)
     rng = random.Random(4)
@@ -155,3 +154,15 @@ def test_non_finite_scores_are_ignored(engine):
 def test_time_slot_rejects_trailing_newline(engine):
     with pytest.raises(ValueError):
         learn.choose(engine, "time_slot", ("09:00\n",), random.Random(0))
+
+
+def test_flex_kind_follows_the_reach_and_is_fixed_for_the_day(engine):
+    fill(engine, 8, kind="viral")
+    for _ in range(8):
+        add(engine, 0.9, kind="article")
+    learn.update_learning(engine)
+    picks = {learn.flex_kind(engine, f"2026110{d}") for d in range(1, 9)}
+    assert "article" in picks
+    first = learn.flex_kind(engine, "20261102")
+    db.set_kv(engine, "learning_changed", "x")
+    assert learn.flex_kind(engine, "20261102") == first  # stored for the day

@@ -33,6 +33,9 @@ posts = Table(
     Column("topic", String(64)),
     Column("time_slot", String(32)),
     Column("headline_style", String(64)),
+    Column("kind", String(16)),  # "article" (news feed) or "viral" (trending topic)
+    Column("pace", String(16)),  # voice speed used for a reel, e.g. "+20%"
+    Column("design", String(16)),  # reel look: "scene" (follows the news) or "topic"
     Column("media_id", String(128)),
     Column("state", String(16), nullable=False),
     Column("posted_at", DateTime(timezone=True)),
@@ -70,7 +73,7 @@ learning = Table(
     Column("updated_at", DateTime(timezone=True)),
 )
 
-ANALYSIS_DELAY = timedelta(hours=48)
+ANALYSIS_DELAY = timedelta(hours=24)  # a reel's reach shows within a day
 
 
 def _utc(dt: datetime | None) -> datetime | None:
@@ -87,6 +90,7 @@ _POSTS_ADDED_COLUMNS = {
     "container_id": "VARCHAR(128)", "caption": "TEXT",
     "created_at": "TIMESTAMP WITH TIME ZONE", "updated_at": "TIMESTAMP WITH TIME ZONE",
     "claimed_at": "TIMESTAMP WITH TIME ZONE",
+    "kind": "VARCHAR(16)", "pace": "VARCHAR(16)", "design": "VARCHAR(16)",
 }
 
 
@@ -140,11 +144,12 @@ def story_seen(engine: Engine, url: str) -> bool:
 
 def save_post(engine: Engine, *, story_id: str, format: str, topic: str | None = None,
               time_slot: str | None = None, headline_style: str | None = None,
-              state: PostState = PostState.draft) -> int:
+              state: PostState = PostState.draft, kind: str | None = None,
+              pace: str | None = None, design: str | None = None) -> int:
     with engine.begin() as conn:
         res = conn.execute(insert(posts).values(
             story_id=story_id, format=format, topic=topic, time_slot=time_slot,
-            headline_style=headline_style, state=state.value,
+            headline_style=headline_style, kind=kind, pace=pace, design=design, state=state.value,
             created_at=_now(), updated_at=_now()))
         return int(res.inserted_primary_key[0])
 
@@ -252,12 +257,14 @@ def list_posts_by_state(engine: Engine, state: PostState) -> list[Post]:
 
 
 def count_posts_since(engine: Engine, since: datetime, exclude: tuple[PostState, ...],
-                      fmt: str | None = None) -> int:
+                      fmt: str | None = None, kind: str | None = None) -> int:
     """Posts created at or after `since` whose state is not in `exclude` (daily-cap accounting);
-    only posts of one format when `fmt` is given."""
+    only posts of one format / one kind when `fmt` / `kind` is given."""
     conds = [posts.c.created_at.is_not(None), posts.c.state.not_in([s.value for s in exclude])]
     if fmt is not None:
         conds.append(posts.c.format == fmt)
+    if kind is not None:
+        conds.append(posts.c.kind == kind)
     with engine.connect() as conn:
         rows = conn.execute(select(posts.c.created_at).where(*conds)).all()
     since = _utc(since)
@@ -326,7 +333,8 @@ def scored_posts(engine: Engine) -> list[dict]:
                 or not math.isfinite(score)):
             continue
         out.append({"id": r.id, "topic": r.topic, "format": r.format, "time_slot": r.time_slot,
-                    "headline_style": r.headline_style, "score": float(score),
+                    "headline_style": r.headline_style, "kind": r.kind, "pace": r.pace,
+                    "design": r.design, "score": float(score),
                     "posted_at": _utc(r.posted_at)})
     return out
 

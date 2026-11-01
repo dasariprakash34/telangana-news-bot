@@ -12,6 +12,7 @@ import httpx
 import pytest
 from PIL import Image
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 from test_pipeline import (NOW, FakeIG, FakeTG, all_posts, engine, make_deps,  # noqa: F401
                            settings, story)
@@ -660,3 +661,85 @@ def test_every_scene_name_the_page_can_draw_is_a_name_the_code_can_choose():
     chosen = set(reel_anim._TOPIC_EFFECT.values()) | {n for n, _ in reel_anim._SPECIFIC} | {"rain", "heat", "fog"}
     for name in chosen:
         assert f"  {name}(t)" in html or f"EFFECTS.{name}=" in html, f"anim.html has no scene named {name}"
+
+
+# -- reels only: ten reels a day, no images -----------------------------------------------------------------
+def only_settings(**kw):
+    kw.setdefault("reels_only", True)
+    kw.setdefault("article_daily", 2)
+    kw.setdefault("flex_daily", 0)
+    kw.setdefault("per_run_cap", 10)
+    return reel_settings(**kw)
+
+
+def test_reels_only_makes_nothing_but_reels_up_to_the_article_quota(engine, tmp_path):
+    deps = reel_deps(engine, tmp_path, [story(i) for i in range(1, 6)])
+    run = pipeline.run_once(only_settings(reel_share=0.0), deps)  # the share is ignored
+    posts = all_posts(engine)
+    assert run.drafted == 2 and run.cap_reached
+    rows = engine.connect().execute(db.posts.select()).all()
+    assert [p.format for p in posts] == ["reel", "reel"] and {r.kind for r in rows} == {"article"}
+    again = pipeline.run_once(only_settings(), deps)  # the quota is per 24 hours
+    assert again.drafted == 0 and again.cap_reached and len(all_posts(engine)) == 2
+
+
+def test_the_flex_reels_go_to_articles_on_the_days_articles_are_winning(engine, tmp_path):
+    db.set_kv(engine, "flex_kind:20261028", "article")
+    deps = reel_deps(engine, tmp_path, [story(i) for i in range(1, 8)])
+    assert pipeline.run_once(only_settings(flex_daily=2), deps).drafted == 4
+    db.set_kv(engine, "flex_kind:20261028", "viral")  # (a new day would decide again; here it is forced)
+    fresh = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    db.init(fresh)
+    db.set_kv(fresh, "flex_kind:20261028", "viral")
+    deps = reel_deps(fresh, tmp_path, [story(i) for i in range(10, 17)])
+    assert pipeline.run_once(only_settings(flex_daily=2), deps).drafted == 2
+
+
+def test_reels_only_never_falls_back_to_images_and_the_story_is_retried(engine, tmp_path):
+    deps = reel_deps(engine, tmp_path, [story(1)], fail=ReelUnavailable("voice down"))
+    run = pipeline.run_once(only_settings(), deps)
+    assert run.drafted == 0 and all_posts(engine) == [] and run.failed == 1
+    assert not db.story_seen(engine, story(1).url)  # released, so the next run can try it again
+
+
+def test_reels_only_needs_the_reel_tools(engine, tmp_path):
+    deps = make_deps(engine, tmp_path, [story(1)], tg=FakeTG())
+    with pytest.raises(pipeline.PipelineError, match="REELS_ONLY"):
+        pipeline.run_once(only_settings(), deps)
+
+
+def test_each_reel_records_what_it_sounded_and_looked_like(engine, tmp_path):
+    from tgnews import learn
+    deps = reel_deps(engine, tmp_path, [story(1)])
+    pipeline.run_once(only_settings(), deps)
+    [p] = engine.connect().execute(db.posts.select()).all()
+    assert p.kind == "article" and p.pace in learn.PACES and p.design in learn.DESIGNS
+
+
+def test_the_cover_is_uploaded_and_sent_to_instagram_with_the_reel(engine, tmp_path):
+    ig, tg = FakeIG(), FakeTG()
+    deps = reel_deps(engine, tmp_path, [story(1)], ig=ig, tg=tg)
+    plain = deps.render_reel
+
+    def with_cover(post, out_dir, brand):
+        video = plain(post, out_dir, brand)
+        (out_dir / "cover-reel.jpg").write_bytes(b"jpg")
+        return video
+
+    deps = replace(deps, render_reel=with_cover)
+    pipeline.run_once(only_settings(), deps)
+    [p] = all_posts(engine)
+    assert db.get_kv(engine, f"cover:{p.id}").endswith("/cover-reel.jpg")
+    assert db.transition_post_state(engine, p.id, PostState.draft, PostState.approved)
+    pipeline.publish_approved(only_settings(), deps)
+    assert ig.created[0]["media_type"] == "REELS" and ig.created[0]["cover_url"].endswith("/cover-reel.jpg")
+
+
+def test_a_reel_without_a_cover_is_still_published(engine, tmp_path):
+    ig = FakeIG()
+    deps = reel_deps(engine, tmp_path, [story(1)], ig=ig)
+    pipeline.run_once(only_settings(), deps)
+    [p] = all_posts(engine)
+    assert db.transition_post_state(engine, p.id, PostState.draft, PostState.approved)
+    pipeline.publish_approved(only_settings(), deps)
+    assert "cover_url" not in ig.created[0]

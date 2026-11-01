@@ -41,17 +41,17 @@ def test_post_state_roundtrip(engine):
     assert db.posts_due_for_analysis(engine, now - timedelta(days=3)) == []
 
 
-def test_posts_due_for_analysis_48h_boundary(engine):
+def test_posts_due_for_analysis_24h_boundary(engine):
     db.save_story(engine, make_story())
     now = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
     ids = {}
-    for hours in (24, 47, 48, 72):
+    for hours in (12, 23, 24, 72):
         pid = db.save_post(engine, story_id="s1", format="single", state=PostState.draft)
         db.update_post_state(engine, pid, PostState.published, media_id=f"m{hours}",
                              posted_at=now - timedelta(hours=hours))
         ids[hours] = pid
     due = {p.id for p in db.posts_due_for_analysis(engine, now)}
-    assert due == {ids[48], ids[72]}
+    assert due == {ids[24], ids[72]}
 
 
 def test_save_story_twice_does_not_raise(engine):

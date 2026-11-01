@@ -28,7 +28,7 @@ from .fetch import FetchReport
 from .llm import LLM_AUTH_ERRORS
 from .instagram import InstagramClient, InstagramError
 from .models import PostState, Story
-from .reel import ReelUnavailable
+from .reel import ReelUnavailable, cover_path
 from .render import ShapingUnavailable, assert_shaping_available, render_card, render_carousel
 from .rewrite import DEFAULT_MODEL, STYLES, TOPICS, RewriteFailed, RewriteUnavailable, RewrittenPost, rewrite
 from .safety import BlocklistError, Verdict
@@ -173,7 +173,8 @@ def compose_caption(post: RewrittenPost) -> str:
 
 
 AUTH_CODES = (190, 102)
-_INFRA = (RewriteUnavailable, StorageError, gate.TelegramError, publish.PublishError, InstagramError)
+_INFRA = (RewriteUnavailable, StorageError, gate.TelegramError, publish.PublishError, InstagramError,
+          ReelUnavailable)
 
 
 def is_auth_failure(exc: BaseException) -> bool:
@@ -199,6 +200,32 @@ def _over_cap(settings: Settings, engine: Engine, now: datetime) -> bool:
     return db.count_posts_since(engine, now - CAP_WINDOW, NOT_COUNTED) >= settings.daily_cap
 
 
+def article_reel_quota(settings: Settings, engine: Engine, now: datetime) -> int:
+    """Article reels allowed in 24 h: the fixed ARTICLE_DAILY, plus the flex reels when the news
+    articles are the kind reaching more people today."""
+    flex = settings.flex_daily if learn.flex_kind(engine, f"{_aware(now):%Y%m%d}") == "article" else 0
+    return settings.article_daily + flex
+
+
+def _article_reels_full(settings: Settings, engine: Engine, now: datetime) -> bool:
+    return settings.reels_only and db.count_posts_since(
+        engine, now - CAP_WINDOW, NOT_COUNTED, fmt="reel", kind="article") >= article_reel_quota(
+            settings, engine, now)
+
+
+def upload_cover(deps: Deps, video: Path, prefix: str) -> str | None:
+    """Upload the reel's cover picture (None when there is none or it cannot be uploaded: a reel
+    without a custom cover is still posted)."""
+    cover = cover_path(video)
+    if deps.upload is None or not cover.is_file():
+        return None
+    try:
+        return deps.upload([cover], prefix + "-cover")[0]
+    except Exception as exc:
+        log.warning("cover upload failed (%s); the reel will use Instagram's default cover", type(exc).__name__)
+        return None
+
+
 def _check_token(engine: Engine, now: datetime) -> None:
     raw = db.get_kv(engine, publish.KV_TOKEN_EXPIRES)
     expires = publish._parse_ts(raw) if raw else None
@@ -219,6 +246,7 @@ class _Ctx:
     dry_out: Path | None = None  # set in dry-run: write files instead of upload/gate/publish
     seq: int = 0
     created: int = 0  # posts/drafts created in this run
+    cover_url: str | None = None  # cover picture of the reel just made
 
 
 # -- the run ----------------------------------------------------------------
@@ -226,6 +254,8 @@ def run_once(settings: Settings, deps: Deps, *, ignore_slots: bool = False) -> R
     if deps.engine is None:
         raise PipelineError("run_once needs deps.engine")
     deps.check_shaping()
+    if settings.reels_only and (not settings.reels_enabled or deps.render_reel is None):
+        raise PipelineError("REELS_ONLY needs REELS_ENABLED=true and the reel tools")
     if settings.mode == "auto" and deps.instagram is None:
         raise PipelineError("auto mode needs an Instagram client")
     if settings.mode == "review" and deps.telegram is None:
@@ -254,7 +284,7 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
     if not ignore_slots and slot not in active_slots(settings, now, engine):
         summary.slot_active = False
         return summary
-    if _over_cap(settings, engine, now):
+    if _over_cap(settings, engine, now) or _article_reels_full(settings, engine, now):
         summary.cap_reached = True
         return summary
 
@@ -283,7 +313,7 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
                deps.out_dir, dry_out)
     infra_failures = 0
     while candidates:
-        if _over_cap(settings, engine, now):
+        if _over_cap(settings, engine, now) or _article_reels_full(settings, engine, now):
             summary.cap_reached = True
             break
         if ctx.created >= settings.effective_per_run_cap:
@@ -331,6 +361,12 @@ def _process(ctx: _Ctx, story: Story) -> bool:
     if _reel_wanted(ctx):
         fmt = "reel"
     rewritten = rewrite(story, deps.llm, style, deps.llm_model, ctx.settings.require_source_credit)
+    ctx.cover_url = None
+    pace = design = None
+    if fmt == "reel":  # what the reel sounds and looks like is tried and learned from its reach
+        pace = learn.choose(engine, "pace", learn.PACES, ctx.rng)
+        design = learn.choose(engine, "design", learn.DESIGNS, ctx.rng)
+        rewritten.pace, rewritten.design = pace, design
     caption = compose_caption(rewritten)
     ctx.seq += 1
     if ctx.dry_out is not None:
@@ -339,8 +375,11 @@ def _process(ctx: _Ctx, story: Story) -> bool:
     # Reels are new: they always go to Telegram for approval, even in auto mode.
     auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW and fmt != "reel"
     post_id = db.save_post(engine, story_id=story.id, format=fmt, topic=rewritten.topic,
-                           time_slot=ctx.slot, headline_style=style, state=PostState.draft)
+                           time_slot=ctx.slot, headline_style=style, state=PostState.draft,
+                           kind="article", pace=pace, design=design)
     ctx.created += 1
+    if ctx.cover_url:
+        db.set_kv(engine, f"cover:{post_id}", ctx.cover_url)
     db.set_post_caption(engine, post_id, caption)
     gate.save_content(engine, post_id, rewritten, fmt)
     if auto_publish:
@@ -370,7 +409,11 @@ def _reel_wanted(ctx: _Ctx) -> bool:
     """True when this story should become a reel. Costs no random draw (and so changes nothing
     about the existing behaviour) unless REELS_ENABLED is on and the reel tools are wired in."""
     s, d = ctx.settings, ctx.deps
-    if not s.reels_enabled or s.reel_daily_cap <= 0 or d.render_reel is None:
+    if not s.reels_enabled or d.render_reel is None:
+        return False
+    if s.reels_only:  # every story is a reel; the ARTICLE_DAILY quota is checked by the run
+        return True
+    if s.reel_daily_cap <= 0:
         return False
     if ctx.dry_out is None and d.upload_video is None:
         return False
@@ -389,8 +432,11 @@ def _make_media(ctx: _Ctx, rewritten: RewrittenPost, story: Story,
     if fmt == "reel":
         try:
             video = deps.render_reel(rewritten, folder, ctx.settings.brand_name)
+            ctx.cover_url = upload_cover(deps, video[0], prefix)
             return "reel", [deps.upload_video(video[0], prefix)], video[0]
         except ReelUnavailable as exc:
+            if ctx.settings.reels_only:  # no images: skip this story (it is released for a retry)
+                raise
             log.warning("story %s: reel unavailable (%s); posting images instead", story.id, exc)
             fmt = "carousel"
     paths = deps.render(rewritten, fmt, folder, ctx.settings.brand_name)
@@ -478,8 +524,10 @@ def publish_approved(settings: Settings, deps: Deps) -> PublishSummary:
             if not draft or not draft["slides"] or not post.caption:
                 db.transition_post_state(engine, post.id, PostState.approved, PostState.failed)
                 raise publish.PublishError(f"post {post.id} has no stored slides or caption")
+            cover = db.get_kv(engine, f"cover:{post.id}") if post.format == "reel" else None
             publish.publish_post(post.id, draft["slides"], post.caption, deps.instagram, engine,
-                                 sleep=deps.sleep, kind="reel" if post.format == "reel" else "images")
+                                 sleep=deps.sleep, kind="reel" if post.format == "reel" else "images",
+                                 cover_url=cover)
             out.published += 1
             if deps.telegram is not None:
                 gate.notify(deps.telegram, f"Published post #{post.id} on Instagram.")

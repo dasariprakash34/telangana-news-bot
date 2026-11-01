@@ -1,7 +1,7 @@
 import pytest
 
 from tgnews import config
-from tgnews.config import Settings
+from tgnews.config import ConfigError, Settings
 
 
 def test_mode_defaults_to_review():
@@ -9,7 +9,8 @@ def test_mode_defaults_to_review():
     assert s.mode == "review"
     assert s.explore_rate == 0.2
     assert s.min_scored_posts == 30
-    assert s.score_weights == {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
+    assert s.score_weights == {"shares": 30.0, "saves": 30.0, "likes": 3.0, "comments": 10.0}
+    assert (s.reels_only, s.article_daily, s.flex_daily) == (False, 4, 2)
 
 
 def test_auto_mode():
@@ -81,3 +82,11 @@ def test_require_source_credit_parsing():
     assert Settings.from_env({"REQUIRE_SOURCE_CREDIT": " TRUE "}).require_source_credit is True
     with pytest.raises(ValueError, match="REQUIRE_SOURCE_CREDIT"):
         Settings.from_env({"REQUIRE_SOURCE_CREDIT": "maybe"})
+
+
+def test_reel_plan_settings():
+    s = Settings.from_env({"REELS_ONLY": "true", "ARTICLE_DAILY": "5", "FLEX_DAILY": "0"})
+    assert (s.reels_only, s.article_daily, s.flex_daily) == (True, 5, 0)
+    for bad in ({"REELS_ONLY": "maybe"}, {"ARTICLE_DAILY": "-1"}, {"FLEX_DAILY": "two"}):
+        with pytest.raises(ConfigError):
+            Settings.from_env(bad)

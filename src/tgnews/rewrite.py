@@ -102,6 +102,8 @@ class RewrittenPost:
     badge: str | None = None  # label for the corner chip, instead of the topic's (daily viral reel)
     ticker_tag: str | None = None  # label for the ticker tag, instead of "తాజా వార్త"
     effect: str | None = None  # background effect name, instead of the one chosen from the news
+    pace: str | None = None  # voice speed for this reel (learned), instead of REEL_RATE
+    design: str | None = None  # reel look (learned): "scene" or "topic"
 
 
 def _is_telugu(ch: str) -> bool:
