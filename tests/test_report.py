@@ -43,8 +43,8 @@ def make(n):
 
 def test_report_says_insufficient_data_under_30_posts():
     client = FakeClient("x")
-    out = report.weekly_report(make(12), client, NOW, MODEL)
-    assert "12 scored posts" in out and "fewer than the 30" in out
+    out = report.weekly_report(make(6), client, NOW, MODEL)
+    assert "6 scored posts" in out and "fewer than the 12" in out
     assert "no winner is declared" in out.lower() and "nothing is concluded" in out
     assert client.calls == []
 

@@ -14,14 +14,18 @@ from sqlalchemy.engine import Engine
 from . import db
 from .rewrite import STYLES, TOPICS
 
-ATTRIBUTES = ("topic", "format", "time_slot", "headline_style")
+ATTRIBUTES = ("topic", "format", "time_slot", "headline_style", "kind", "pace", "design")
 FORMATS = ("card", "carousel")
-SCORED_THRESHOLD = 30
-MIN_N_PER_OPTION = 3
+KINDS = ("viral", "article")  # where the day's flex reels go
+PACES = ("+10%", "+20%", "+30%")  # how fast the voice speaks
+DESIGNS = ("scene", "topic")  # reel look: a scene that follows the story, or the topic's own scene
+SCORED_THRESHOLD = 12  # reels show their reach within a day, so the loop starts learning early
+MIN_N_PER_OPTION = 2
 EXPLOIT_PROBABILITY = 0.8
 _SLOT_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
-_FIXED = {"topic": TOPICS, "format": FORMATS, "headline_style": STYLES}
+_FIXED = {"topic": TOPICS, "format": FORMATS, "headline_style": STYLES, "kind": KINDS,
+          "pace": PACES, "design": DESIGNS}
 
 
 def validate_options(attribute: str, options) -> list[str]:
@@ -62,3 +66,16 @@ def choose(engine: Engine, attribute: str, options, rng: random.Random) -> str:
     if best is not None and rng.random() < EXPLOIT_PROBABILITY:
         return best
     return rng.choice(opts)
+
+
+def flex_kind(engine: Engine, day: str) -> str:
+    """Which kind of reel ("viral" or "article") gets today's flex reels: the one reaching more
+    people so far (mostly), a coin flip while there is not enough data. Stored for the day so the
+    posting run and the viral runs agree even after the learning table changes."""
+    key = f"flex_kind:{day}"
+    stored = db.get_kv(engine, key)
+    if stored in KINDS:
+        return stored
+    kind = choose(engine, "kind", KINDS, random.Random(int(day)))
+    db.set_kv(engine, key, kind)
+    return kind

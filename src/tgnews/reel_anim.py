@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .reel import MAX_REEL_SECONDS, ReelUnavailable, _run, _tool, edge_tts_voice
+from .reel import MAX_REEL_SECONDS, ReelUnavailable, _run, _tool, cover_path, edge_tts_voice
 from .render import DEFAULT_THEME, FONT_PATH, PALETTE, TOPIC_LABEL, _map_data, _slug
 from .rewrite import RewrittenPost
 
@@ -106,6 +106,8 @@ def effect_for(post: RewrittenPost) -> str:
     stumps, rocket, film strip, neural network), otherwise the topic's scene."""
     if getattr(post, "effect", None):
         return post.effect
+    if getattr(post, "design", None) == "topic":  # the learned alternative look: the topic's own scene
+        return _TOPIC_EFFECT.get(post.topic, "other")
     head = _plain(post.headline_te)
     for words, name in ((_RAIN, "rain"), (_HEAT, "heat"), (_COLD, "fog")):
         if any(w in head for w in words):
@@ -333,6 +335,8 @@ def render_animated(post: RewrittenPost, out_dir, brand: str, *, voice: str, rat
                 raise ReelUnavailable(f"reel would be longer than {MAX_REEL_SECONDS:.0f} seconds")
             scene["words"] = timed_words(words, scene["say"], seconds)
             browser.setup(scene, meta)
+            if i == 1:  # the cover: the whole headline lit up, so the grid shows words, not a blank scene
+                cover_path(out / f"reel-{slug}.mp4").write_bytes(browser.frame(max(0.0, length - 0.1), length))
             n = math.ceil(length * FPS)
             seg = out / f"seg-{slug}-{i}.mp4"
             encoder(ffmpeg, mp3, seg, (browser.frame(f / FPS, length) for f in range(n)),

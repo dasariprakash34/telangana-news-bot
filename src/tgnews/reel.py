@@ -36,6 +36,11 @@ class ReelUnavailable(RuntimeError):
     """A reel could not be made (missing tool, voice failure, too long). Messages are safe to log."""
 
 
+def cover_path(video: Path) -> Path:
+    """Where the animated renderer leaves the reel's cover picture (headline showing) next to the mp4."""
+    return Path(video).parent / ("cover-" + Path(video).stem.removeprefix("reel-") + ".jpg")
+
+
 # -- narration ----------------------------------------------------------------
 def narration(post: RewrittenPost, require_credit: bool = True) -> list[str]:
     """One spoken text per carousel slide, in slide order: the headline, then each slide's 1-2 key
@@ -139,6 +144,7 @@ def render_reel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND, *, voi
     style "animated" (default): motion background, sliding cards and a 3D card scene, drawn in
     headless Chrome (reel_anim.py). If Chrome or the 3D page is unavailable it falls back to the
     plain "slides" style (the carousel slides with a slow zoom), which needs only ffmpeg."""
+    rate = getattr(post, "pace", None) or rate
     if style == "animated":
         from .reel_anim import render_animated  # lazy: reel_anim imports this module
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -25,10 +26,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-from . import db, gate, safety
+from . import db, gate, learn, safety
 from .llm import LLM_AUTH_ERRORS, LLMError, LLMRateLimited
 from .models import PostState, Story
-from .pipeline import Deps, PipelineError, _aware, compose_caption, sanitize_error
+from .pipeline import Deps, PipelineError, _aware, compose_caption, sanitize_error, upload_cover
 from .reel import ReelUnavailable
 from .rewrite import (MAX_CAPTION, MAX_HEADLINE, MAX_HASHTAGS, TOPICS, RewrittenPost, telugu_share,
                       _neutralise, _strip_fences)
@@ -54,7 +55,10 @@ KV_DAY = "viral_day:"
 # Three article reels a day. A slot is chosen from the UTC hour the run starts in (the workflow starts
 # them at 02:00, 07:00 and 12:30 UTC = 07:30, 12:30 and 18:00 IST, an hour or so before the post time):
 # (name, first UTC hour that is NOT this slot, preferred kind of topic, post time to say in Telegram)
-SLOTS = (("morning", 5, "india", "8 AM"), ("afternoon", 10, "tech", "1 PM"), ("evening", 24, None, "7 PM"))
+# Four fixed viral reels and two flex slots. A flex slot only makes a reel on days when the learning loop
+# says trending topics are reaching more people than the news articles (otherwise the articles get them).
+SLOTS = (("morning", 3, "india", "8 AM"), ("flex-a", 5, None, "10 AM"), ("midday", 8, "tech", "12:30 PM"),
+         ("afternoon", 11, "india", "4 PM"), ("flex-b", 13, None, "6 PM"), ("evening", 24, None, "8 PM"))
 
 
 def slot_for(now: datetime) -> tuple[str, str | None, str]:
@@ -370,6 +374,9 @@ def run_daily(settings, deps: Deps, *, http: httpx.Client | None = None,
     if db.get_kv(eng, KV_DAY + key):
         out.status = "already_today"
         return out
+    if slot.startswith("flex") and learn.flex_kind(eng, day) != "viral":
+        out.status, out.detail = "flex_to_articles", "today's flex reels go to the news articles"
+        return out
     own_http = http is None
     http = http or httpx.Client(timeout=20)
     fetch_text = fetch_text or (lambda u: fetch_article_text(u, http))
@@ -437,11 +444,21 @@ def _make_draft(settings, deps: Deps, cand: Candidate, post: RewrittenPost, now:
         return out
     post_id = None
     try:
+        names = list(dict.fromkeys(a.source for a in cand.articles if a.source))[:3]
+        if names and settings.require_source_credit:
+            post.caption_te = f"{post.caption_te}\n\nమూలం: {', '.join(names)}"
         caption = compose_caption(post)
+        rng = random.Random()
+        post.pace, post.design = learn.choose(eng, "pace", learn.PACES, rng), learn.choose(eng, "design", learn.DESIGNS, rng)
         video = deps.render_reel(post, deps.out_dir / story.id, settings.brand_name)
-        url = deps.upload_video(video[0], f"{now:%Y-%m-%d}/{story.id}")
+        prefix = f"{now:%Y-%m-%d}/{story.id}"
+        url = deps.upload_video(video[0], prefix)
+        cover = upload_cover(deps, video[0], prefix)
         post_id = db.save_post(eng, story_id=story.id, format="reel", topic=post.topic,
-                               headline_style=post.headline_style, state=PostState.draft)
+                               headline_style=post.headline_style, state=PostState.draft,
+                               kind="viral", pace=post.pace, design=post.design)
+        if cover:
+            db.set_kv(eng, f"cover:{post_id}", cover)
         db.set_post_caption(eng, post_id, caption)
         gate.save_content(eng, post_id, post, "reel")
         gate.send_draft(eng, deps.telegram, post_id, [url], caption, local_video=video[0])

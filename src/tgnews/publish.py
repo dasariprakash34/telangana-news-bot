@@ -65,11 +65,12 @@ def _validate_urls(urls: list[str], kind: str = "images") -> None:
 
 
 def _create_container(client: InstagramClient, urls: list[str], caption: str,
-                      kind: str = "images") -> str:
+                      kind: str = "images", cover_url: str | None = None) -> str:
     path = f"{client.ig_user_id}/media"
     if kind == "reel":
+        extra = {"cover_url": cover_url} if cover_url else {}
         res = client.post(path, media_type="REELS", video_url=urls[0], caption=caption,
-                          share_to_feed="true")
+                          share_to_feed="true", **extra)
     elif len(urls) == 1:
         res = client.post(path, image_url=urls[0], caption=caption)
     else:
@@ -103,7 +104,7 @@ class _ContainerAlreadyPublished(PublishError):
 
 def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramClient, engine, *,
                  sleep: Callable[[float], None] = time.sleep, poll_interval: float = 10.0,
-                 timeout: float = 300.0, kind: str = "images") -> str:
+                 timeout: float = 300.0, kind: str = "images", cover_url: str | None = None) -> str:
     """Publish; returns the Instagram media id. Never calls media_publish more than once.
     `kind` is "images" (one image or a carousel) or "reel" (one public MP4 URL)."""
     _validate_urls(urls, kind)
@@ -124,7 +125,7 @@ def publish_post(post_id: int, urls: list[str], caption: str, client: InstagramC
     # published, so mark failed (conditionally: never overwrite a live post).
     try:
         db.set_post_caption(engine, post_id, caption)
-        container_id = _create_container(client, urls, caption, kind)
+        container_id = _create_container(client, urls, caption, kind, cover_url)
         db.set_post_container(engine, post_id, container_id)
         _wait_until_finished(client, container_id, sleep, poll_interval, timeout)
     except _ContainerAlreadyPublished as exc:

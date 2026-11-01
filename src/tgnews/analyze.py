@@ -19,7 +19,8 @@ log = logging.getLogger(__name__)
 # (output key, Graph API metric name)
 METRICS = (("reach", "reach"), ("likes", "likes"), ("comments", "comments"),
            ("shares", "shares"), ("saves", "saved"), ("views", "views"))
-DEFAULT_WEIGHTS: dict[str, float] = {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
+# score = views + weights x what viewers did (a share or save is worth ~30 more people seeing it)
+DEFAULT_WEIGHTS: dict[str, float] = {"shares": 30.0, "saves": 30.0, "likes": 3.0, "comments": 10.0}
 MAX_POSTS_PER_RUN = 25  # x 6 metric calls = 150 calls, under the ~200/hour rate limit
 MAX_ANALYSIS_AGE = timedelta(days=14)  # older posts with no data are given up on
 PARTIAL_GRACE = timedelta(days=7)  # younger posts with a missing core metric are retried
@@ -77,19 +78,14 @@ def pull_insights(media_id: str, client: Any) -> dict[str, float | None]:
 
 def score(metrics: Mapping[str, float | None],
           weights: Mapping[str, float] = DEFAULT_WEIGHTS) -> float | None:
-    """(shares*ws + saves*wsv + likes*wl + comments*wc) / reach.
-
-    None when reach is missing/zero or when a core signal (shares, saves) is unavailable.
-    Unavailable likes/comments contribute 0 (they are low-weight signals).
-    """
-    reach = metrics.get("reach")
-    shares, saves = metrics.get("shares"), metrics.get("saves")
-    if not reach or shares is None or saves is None:
+    """How many people it reached: views (reach when views is missing) plus weighted shares, saves,
+    likes and comments. None only when neither views nor reach is known; a post nobody saw scores 0."""
+    seen = metrics.get("views")
+    if seen is None:
+        seen = metrics.get("reach")
+    if seen is None:
         return None
-    total = (shares * weights["shares"] + saves * weights["saves"]
-             + (metrics.get("likes") or 0) * weights["likes"]
-             + (metrics.get("comments") or 0) * weights["comments"])
-    return total / reach
+    return seen + sum((metrics.get(k) or 0) * weights[k] for k in ("shares", "saves", "likes", "comments"))
 
 
 def run_analysis(engine: Any, client: Any, now: datetime) -> int:
@@ -109,7 +105,7 @@ def run_analysis(engine: Any, client: Any, now: datetime) -> int:
             if all(v is None for v in metrics.values()):
                 log.warning("insights not available yet for post %s; will retry", post.id)
                 continue
-            core_missing = any(metrics.get(k) is None for k in ("reach", "shares", "saves"))
+            core_missing = metrics.get("views") is None and metrics.get("reach") is None
             if core_missing and now - post.posted_at < PARTIAL_GRACE:
                 log.warning("partial insights for post %s; will retry", post.id)
                 continue

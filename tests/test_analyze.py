@@ -57,23 +57,21 @@ def published(engine, media_id, age_hours=72):
 
 def test_score_formula_matches_spec():
     m = {"reach": 100, "likes": 10, "comments": 5, "shares": 3, "saves": 2, "views": 500}
-    expected = (3 * 1.0 + 2 * 1.0 + 10 * 0.1 + 5 * 0.2) / 100
-    assert score(m) == pytest.approx(expected) == pytest.approx(0.07)
-    assert DEFAULT_WEIGHTS == {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
-    assert score(m, {"shares": 2.0, "saves": 0.0, "likes": 0.0, "comments": 0.0}) == pytest.approx(0.06)
+    expected = 500 + 3 * 30 + 2 * 30 + 10 * 3 + 5 * 10  # views, then what the viewers did
+    assert score(m) == pytest.approx(expected) == pytest.approx(730)
+    assert DEFAULT_WEIGHTS == {"shares": 30.0, "saves": 30.0, "likes": 3.0, "comments": 10.0}
+    assert score(m, {"shares": 2.0, "saves": 0.0, "likes": 0.0, "comments": 0.0}) == pytest.approx(506)
 
 
-def test_zero_reach_returns_none():
-    base = {"likes": 1, "comments": 1, "shares": 1, "saves": 1}
-    assert score({**base, "reach": 0}) is None
-    assert score({**base, "reach": None}) is None
+def test_a_post_nobody_saw_scores_zero_and_an_unknown_one_scores_none():
+    assert score({"views": 0, "reach": 0, "likes": 0, "comments": 0, "shares": 0, "saves": 0}) == 0
+    assert score({"views": None, "reach": None, "shares": 1}) is None
+    assert score({"views": None, "reach": 40, "shares": 1}) == pytest.approx(70)  # reach stands in for views
 
 
-def test_missing_core_signals_return_none_and_missing_likes_comments_count_zero():
-    assert score({"reach": 100, "shares": None, "saves": 2, "likes": 1, "comments": 1}) is None
-    assert score({"reach": 100, "shares": 3, "saves": None, "likes": 1, "comments": 1}) is None
-    assert score({"reach": 100, "shares": 3, "saves": 2, "likes": None,
-                  "comments": None}) == pytest.approx(0.05)
+def test_missing_shares_saves_likes_comments_count_zero():
+    assert score({"views": 100, "shares": None, "saves": 2, "likes": 1, "comments": 1}) == pytest.approx(173)
+    assert score({"views": 100, "shares": 3, "saves": None, "likes": None, "comments": None}) == pytest.approx(190)
 
 
 def test_pull_insights_one_call_per_metric_and_maps_saved():
@@ -114,12 +112,12 @@ def test_run_analysis_records_metrics_and_score(engine):
     assert run_analysis(engine, FakeClient(), NOW) == 1
     metrics = db.get_post(engine, pid).metrics
     assert metrics["shares"] == 3 and metrics["saves"] == 2
-    assert metrics["score"] == pytest.approx(0.07)
+    assert metrics["score"] == pytest.approx(730)
     assert db.posts_due_for_analysis(engine, NOW) == []
 
 
-def test_posts_under_48h_are_skipped(engine):
-    pid = published(engine, "M1", age_hours=47)
+def test_posts_under_24h_are_skipped(engine):
+    pid = published(engine, "M1", age_hours=23)
     c = FakeClient()
     assert run_analysis(engine, c, NOW) == 0
     assert c.calls == []
@@ -156,12 +154,13 @@ def test_per_post_error_isolation(engine):
     assert db.get_post(engine, bad).metrics is None
 
 
-def test_metric_with_null_score_still_stored(engine):
+def test_a_refused_metric_is_stored_as_none_and_still_scored(engine):
     pid = published(engine, "M1", age_hours=24 * 8)
     c = FakeClient(refuse={"shares"})
     assert run_analysis(engine, c, NOW) == 1
     m = db.get_post(engine, pid).metrics
-    assert m["score"] is None and m["reach"] == 100
+    assert m["shares"] is None and m["reach"] == 100
+    assert m["score"] == pytest.approx(500 + 2 * 30 + 10 * 3 + 5 * 10)
 
 
 def test_post_cap_per_run(engine):
@@ -218,10 +217,10 @@ def test_posts_older_than_max_age_skipped(engine):
 def test_partial_young_post_retried_old_post_stored(engine):
     young = published(engine, "Y", age_hours=24 * 3)
     old = published(engine, "O", age_hours=24 * 8)
-    assert run_analysis(engine, FakeClient(refuse={"saved"}), NOW) == 1
+    assert run_analysis(engine, FakeClient(refuse={"views", "reach"}), NOW) == 1
     assert db.get_post(engine, young).metrics is None
     m = db.get_post(engine, old).metrics
-    assert m["score"] is None and m["saves"] is None
+    assert m["score"] is None and m["views"] is None
 
 
 class AuthDies(FakeClient):

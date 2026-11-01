@@ -24,7 +24,8 @@ class ConfigError(ValueError):
 
 
 def _default_weights() -> dict[str, float]:
-    return {"shares": 1.0, "saves": 1.0, "likes": 0.1, "comments": 0.2}
+    # Reach first: a post's score is its views plus these multiples of what its viewers did.
+    return {"shares": 30.0, "saves": 30.0, "likes": 3.0, "comments": 10.0}
 
 
 def _parse_bool(raw: str | None, default: bool, name: str = "REQUIRE_SOURCE_CREDIT") -> bool:
@@ -85,6 +86,18 @@ def _parse_rate(raw: str | None) -> str:
     if not _RATE_RE.fullmatch(value):
         raise ConfigError("REEL_RATE must look like +15% or -10%")
     return value
+
+
+def _parse_count(raw: str | None, name: str, default: int) -> int:
+    if raw is None or not raw.strip():
+        return default
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        raise ConfigError(f"{name} must be a whole number, 0 or more") from None
+    if n < 0:
+        raise ConfigError(f"{name} must be a whole number, 0 or more")
+    return n
 
 
 def _parse_cap(raw: str | None) -> int:
@@ -172,6 +185,9 @@ class Settings:
     reel_voice: str = DEFAULT_REEL_VOICE
     reel_rate: str = DEFAULT_REEL_RATE
     reel_style: str = DEFAULT_REEL_STYLE  # "animated" (Chrome) or "slides" (ffmpeg only)
+    reels_only: bool = False  # REELS_ONLY=true: never post images; a story that cannot be a reel is skipped
+    article_daily: int = 4  # fixed news-article reels a day (posting run, when reels_only)
+    flex_daily: int = 2  # extra reels a day that go to whichever kind is reaching more people
 
     @property
     def effective_per_run_cap(self) -> int:
@@ -202,4 +218,7 @@ class Settings:
             reel_voice=_parse_voice(env.get("REEL_VOICE")),
             reel_rate=_parse_rate(env.get("REEL_RATE")),
             reel_style=_parse_style(env.get("REEL_STYLE")),
+            reels_only=_parse_bool(env.get("REELS_ONLY"), False, "REELS_ONLY"),
+            article_daily=_parse_count(env.get("ARTICLE_DAILY"), "ARTICLE_DAILY", 4),
+            flex_daily=_parse_count(env.get("FLEX_DAILY"), "FLEX_DAILY", 2),
         )

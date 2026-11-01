@@ -15,7 +15,7 @@ from tgnews.models import PostState
 from tgnews.pipeline import Deps, PipelineError
 from tgnews.reel import ReelUnavailable
 
-NOW = datetime(2026, 10, 29, 12, 30, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 29, 14, 0, tzinfo=timezone.utc)
 
 TRENDS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss xmlns:ht="https://trends.google.com/trending/rss" version="2.0"><channel>
@@ -214,7 +214,7 @@ def test_daily_run_makes_a_reel_draft_and_never_publishes(tmp_path):
     assert deps.tg.calls[0][0] == "sendVideo"
     assert "/viral-20261029-evening-" in deps.tg.calls[0][1]["video"] and deps.tg.calls[0][1]["video"].endswith("/reel.mp4")
     note = [p for m, p in deps.tg.calls if m == "sendMessage"][-1]["text"]
-    assert "Approve it before 7 PM IST" in note
+    assert "Approve it before 8 PM IST" in note
     assert deps.made[0].badge == viral.BADGE and deps.made[0].ticker_tag == viral.TICKER
     assert deps.made[0].effect is None  # a trends topic gets its scene from its own words (cricket, space...)
     assert db.get_kv(deps.engine, "viral_day:20261029:evening") == str(out.post_id)
@@ -376,10 +376,25 @@ def test_a_draft_telegram_could_not_send_is_failed_and_a_retry_moves_to_another_
 def test_the_slot_comes_from_the_utc_hour_the_run_starts_in():
     at = lambda h: datetime(2026, 10, 29, h, 5, tzinfo=timezone.utc)
     assert viral.slot_for(at(2)) == ("morning", "india", "8 AM")
-    assert viral.slot_for(at(4)) == ("morning", "india", "8 AM")
-    assert viral.slot_for(at(7)) == ("afternoon", "tech", "1 PM")
-    assert viral.slot_for(at(12)) == ("evening", None, "7 PM")
-    assert viral.slot_for(at(23)) == ("evening", None, "7 PM")
+    assert viral.slot_for(at(4)) == ("flex-a", None, "10 AM")
+    assert viral.slot_for(at(6)) == ("midday", "tech", "12:30 PM")
+    assert viral.slot_for(at(10)) == ("afternoon", "india", "4 PM")
+    assert viral.slot_for(at(12)) == ("flex-b", None, "6 PM")
+    assert viral.slot_for(at(14)) == ("evening", None, "8 PM")
+    assert viral.slot_for(at(23)) == ("evening", None, "8 PM")
+
+
+def test_a_flex_slot_only_makes_a_reel_when_trending_topics_are_winning(tmp_path):
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    deps.now = lambda: datetime(2026, 10, 29, 4, 0, tzinfo=timezone.utc)
+    db.set_kv(deps.engine, "flex_kind:20261029", "article")
+    out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
+    assert out.status == "flex_to_articles" and db.list_posts_by_state(deps.engine, PostState.draft) == []
+    db.set_kv(deps.engine, "flex_kind:20261029", "viral")
+    out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
+    assert out.status == "created" and out.slot == "flex-a"
+    post = db.list_posts_by_state(deps.engine, PostState.draft)[0]
+    assert post.format == "reel"
 
 
 def test_each_slot_makes_its_own_reel_and_a_slot_runs_once(tmp_path):
@@ -388,7 +403,7 @@ def test_each_slot_makes_its_own_reel_and_a_slot_runs_once(tmp_path):
 
     deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
     made = {}
-    for hour, expect in ((2, "morning"), (7, "afternoon"), (12, "evening")):
+    for hour, expect in ((2, "morning"), (6, "midday"), (14, "evening")):
         deps.now = lambda h=hour: datetime(2026, 10, 29, h, 0, tzinfo=timezone.utc)
         deps.llm = LLM('{"index": 0}', script("50"))
         out = viral.run_daily(Settings(), deps, http=trends_client(THREE_TOPICS), fetch_text=facts)
@@ -399,7 +414,7 @@ def test_each_slot_makes_its_own_reel_and_a_slot_runs_once(tmp_path):
     assert len(set(made.values())) == 3  # three different topics: each is excluded once used
     assert len(db.list_posts_by_state(deps.engine, PostState.draft)) == 3
     notes = " ".join(p.get("text", "") for m, p in deps.tg.calls if m == "sendMessage")
-    assert "before 8 AM IST" in notes and "before 1 PM IST" in notes and "before 7 PM IST" in notes
+    assert "before 8 AM IST" in notes and "before 12:30 PM IST" in notes and "before 8 PM IST" in notes
 
 
 def test_the_afternoon_prefers_a_tech_topic_when_one_has_enough_facts(tmp_path):
