@@ -99,12 +99,12 @@ def test_a_feed_that_is_down_is_skipped_not_fatal():
     assert viral.gather(httpx.Client(transport=httpx.MockTransport(handler))) == []
 
 
-def test_enough_facts_needs_two_sources_for_trends_one_for_tech():
-    a = viral.Candidate("india", "t", 1, [viral.Article("t", "https://a/1", "A", text=FACTS_A)])
-    assert not viral.has_enough_facts(a)
-    a.articles.append(viral.Article("t", "https://b/1", "B", text=FACTS_B))
-    assert viral.has_enough_facts(a)
-    tech = viral.Candidate("tech", "t", 1, [viral.Article("t", "https://a/1", "A", text=FACTS_A)])
+def test_enough_facts_needs_one_real_article_with_enough_text():
+    long = viral.Candidate("india", "t", 1, [viral.Article("t", "https://a/1", "A", text="word " * 250)])
+    assert viral.has_enough_facts(long)
+    short = viral.Candidate("india", "t", 1, [viral.Article("t", "https://a/1", "A", text="word " * 60)])
+    assert not viral.has_enough_facts(short)  # a thin article alone is not enough to write a minute from
+    tech = viral.Candidate("tech", "t", 1, [viral.Article("t", "https://a/1", "A", text="word " * 250)])
     assert viral.has_enough_facts(tech)
     thin = viral.Candidate("tech", "t", 1, [viral.Article("t", "https://a/1", "A", text="too short")])
     assert not viral.has_enough_facts(thin)
@@ -114,7 +114,7 @@ def test_shortlist_orders_by_score_skips_seen_and_limits_per_kind():
     cands = [viral.Candidate("india", f"i{n}", n, [viral.Article("x", f"https://i/{n}")]) for n in range(1, 8)]
     cands += [viral.Candidate("tech", f"t{n}", n, [viral.Article("x", f"https://t/{n}")]) for n in range(1, 3)]
     out = viral.shortlist(cands, seen=lambda url: url == "https://i/7")
-    assert [c.title for c in out] == ["i6", "i5", "i4", "i3", "t2", "t1"]
+    assert [c.title for c in out] == ["i6", "i5", "i4", "i3", "i2", "i1", "t2", "t1"]
 
 
 # -- the model ----------------------------------------------------------------------------------------
@@ -220,10 +220,16 @@ def test_daily_run_makes_a_reel_draft_and_never_publishes(tmp_path):
     assert db.get_kv(deps.engine, "viral_day:20261029:evening") == str(out.post_id)
 
 
-def test_only_one_viral_reel_per_day(tmp_path):
+def mark_done(deps, *slots, day="20261029"):
+    for name in slots:
+        db.set_kv(deps.engine, f"viral_day:{day}:{name}", "x")
+
+
+def test_only_one_viral_reel_per_slot(tmp_path):
     deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
     viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
     before = len(deps.tg.calls)
+    mark_done(deps, "morning", "flex-a", "midday", "afternoon", "flex-b")  # (a later run would catch these up)
     again = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
     assert again.status == "already_today" and len(deps.tg.calls) == before
 
@@ -387,6 +393,7 @@ def test_the_slot_comes_from_the_utc_hour_the_run_starts_in():
 def test_a_flex_slot_only_makes_a_reel_when_trending_topics_are_winning(tmp_path):
     deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
     deps.now = lambda: datetime(2026, 10, 29, 4, 0, tzinfo=timezone.utc)
+    mark_done(deps, "morning")
     db.set_kv(deps.engine, "flex_kind:20261029", "article")
     out = viral.run_daily(Settings(), deps, http=trends_client(), fetch_text=fake_text)
     assert out.status == "flex_to_articles" and db.list_posts_by_state(deps.engine, PostState.draft) == []
@@ -402,6 +409,7 @@ def test_each_slot_makes_its_own_reel_and_a_slot_runs_once(tmp_path):
         return FACTS_A if any(w in url for w in ("isro", "second", "third")) else FACTS_B
 
     deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    mark_done(deps, "afternoon", "flex-a", "flex-b")
     made = {}
     for hour, expect in ((2, "morning"), (6, "midday"), (14, "evening")):
         deps.now = lambda h=hour: datetime(2026, 10, 29, h, 0, tzinfo=timezone.utc)
@@ -439,3 +447,17 @@ def test_the_afternoon_prefers_a_tech_topic_when_one_has_enough_facts(tmp_path):
     deps.llm = LLM('{"index": 0}', script("50"))
     morning = viral.run_daily(Settings(), deps, http=httpx.Client(transport=httpx.MockTransport(handler)), fetch_text=facts)
     assert morning.status == "created" and morning.kind == "india"
+
+
+def test_a_late_or_dropped_run_catches_up_on_the_slots_before_it(tmp_path):
+    deps = make_deps(tmp_path, LLM('{"index": 0}', script("50")))
+    mark_done(deps, "flex-a", "flex-b")
+    db.set_kv(deps.engine, "flex_kind:20261029", "article")
+    made = []
+    for _ in range(4):
+        deps.llm = LLM('{"index": 0}', script("50"))
+        out = viral.run_daily(Settings(), deps, http=trends_client(THREE_TOPICS), fetch_text=lambda u: FACTS_A)
+        made.append((out.status, out.slot))
+    assert [m[1] for m in made[:3]] == ["evening", "afternoon", "midday"]  # newest slot first, then earlier ones
+    assert all(m[0] == "created" for m in made[:3])
+

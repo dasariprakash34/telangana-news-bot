@@ -3,16 +3,12 @@ name: tgnews daily viral
 on:
   schedule:
     # Trending-topic reels: four fixed ones a day plus two flex slots (07:30, 09:30, 11:30, 15:30, 17:30 and
-    # 19:30 IST). Each is made and sent to Telegram for approval; once approved it is published by the next
-    # publish-approved run. A flex slot only makes a reel on days when the learning loop says trending topics
-    # reach more people than news articles. The slot comes from the UTC hour the run starts in
-    # (src/tgnews/viral.py SLOTS): keep these crons in step with it.
-    - cron: "0 2 * * *"   # morning: India trends
-    - cron: "0 4 * * *"   # flex
-    - cron: "0 6 * * *"   # midday: tech and AI
-    - cron: "0 10 * * *"  # afternoon: India trends
-    - cron: "0 12 * * *"  # flex
-    - cron: "0 14 * * *"  # evening: the best of either
+    # 19:30 IST). GitHub drops and delays scheduled runs, so this fires every hour from 07:30 to 20:30 IST: a
+    # run makes the reel for its own slot, or catches up on an earlier slot that was missed (one reel per
+    # run; slots already made are skipped). A flex slot only makes a reel on days when the learning loop says
+    # trending topics reach more people than news articles. The slot comes from the UTC hour the run starts
+    # in (src/tgnews/viral.py SLOTS).
+    - cron: "5 2-14 * * *"
   workflow_dispatch:
 
 # Single shared group for ALL tgnews workflows, so two runs never overlap. A new run does not
