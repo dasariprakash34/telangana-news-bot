@@ -22,6 +22,7 @@ from PIL import Image, ImageFilter
 
 from .render import DEFAULT_BRAND, _chunk_points, _slug, render_carousel
 from .rewrite import RewrittenPost
+from .telugu_numbers import speakable
 
 REEL_W, REEL_H = 1080, 1920
 FPS = 24
@@ -48,8 +49,8 @@ def narration(post: RewrittenPost, require_credit: bool = True) -> list[str]:
     points = [p.strip() for p in post.points_te if p.strip()]
     if not points:
         raise ReelUnavailable("a reel needs at least one key point")
-    texts = [post.headline_te.strip()]
-    texts += [". ".join(chunk) for chunk in _chunk_points(points)]
+    texts = [speakable(post.headline_te.strip())]
+    texts += [speakable(". ".join(chunk)) for chunk in _chunk_points(points)]
     credit = (post.source_credit or "").strip()
     if require_credit and credit:
         texts[-1] = f"{texts[-1]}. మూలం: {credit}"
