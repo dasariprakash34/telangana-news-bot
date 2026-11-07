@@ -15,7 +15,7 @@ DEFAULT_MODEL = "claude-sonnet-5-5"  # Anthropic provider only; Gemini needs LLM
 STYLES = ("question", "number", "statement")
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
-    "sports", "education", "health", "business", "temples", "other",
+    "sports", "education", "health", "business", "temples", "cinema", "technology", "other",
 )
 
 MAX_TOKENS = 4000
@@ -50,6 +50,8 @@ _SYSTEM_TEMPLATE = (
     "exactly as the source gives them. For ticket, quota, seva or booking announcements give every date, time and "
     "amount exactly as written, and end the caption by telling viewers to book only on the official TTD website "
     "ttdevasthanams.ap.gov.in and to beware of middlemen.\n"
+    "Cinema news (topic cinema): release dates, announcements, trailers and box-office figures only, exactly as "
+    "the source gives them; no rumours, gossip or private-life stories about actors.\n"
     "{credit_rule}"
     "Reply with a single JSON object and nothing else, with keys: "
     "headline_te (string, at most 90 characters), "
@@ -294,7 +296,7 @@ def rewrite(
             last_exc = exc
             continue
         problems = validate(post, require_credit)
-        if story.topic_hint == "temples":  # a wrong date or time sends devotees to the wrong place
+        if story.topic_hint in ("temples", "cinema"):  # a wrong date, time or figure misleads viewers
             problems += numbers_not_in_source(post, story)
         if not problems:
             return post
