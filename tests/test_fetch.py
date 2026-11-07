@@ -88,7 +88,7 @@ def test_duplicate_urls_across_sources_deduped():
         ("Osmania University exam results out", "education"),
         ("Dengue cases rise at hospital", "health"),
         ("Sensex rises as startup raises funding", "business"),
-        ("Temple festival draws crowds", "other"),
+        ("Temple festival draws crowds", "temples"),
     ],
 )
 def test_assign_topic_hint(text, expected):

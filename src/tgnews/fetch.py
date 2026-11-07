@@ -21,15 +21,22 @@ log = logging.getLogger(__name__)
 TELANGANA_KEYWORDS: tuple[str, ...] = (
     "Telangana", "Hyderabad", "Warangal", "Karimnagar", "Khammam", "Nizamabad",
     "తెలంగాణ", "హైదరాబాద్", "వరంగల్", "కరీంనగర్", "ఖమ్మం", "నిజామాబాద్",
+    # temple feeds: the big Telugu shrines (TTD is in Andhra Pradesh, but Telangana devotees are its audience)
+    "TTD", "Tirumala", "Yadadri", "Bhadrachalam", "Vemulawada", "Basara", "Medaram", "Srisailam",
+    "తిరుమల", "టీటీడీ", "యాదాద్రి", "భద్రాచలం", "వేములవాడ", "బాసర", "మేడారం", "శ్రీశైలం", "ఆలయ",
 )
 
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
-    "sports", "education", "health", "business", "other",
+    "sports", "education", "health", "business", "temples", "other",
 )
 
 # Checked in order; first topic with a matching word-prefix wins.
 _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("temples", ("temple", "ttd", "tirumala", "tirupati", "yadadri", "bhadrachalam", "vemulawada", "basara",
+                 "medaram", "srisailam", "kondagattu", "bhadrakali", "brahmotsav", "darshan", "jatara",
+                 "ఆలయ", "గుడి", "తిరుమల", "టీటీడీ", "యాదాద్రి", "భద్రాచలం", "వేములవాడ", "బాసర", "మేడారం",
+                 "శ్రీశైలం", "దర్శనం", "బ్రహ్మోత్సవ")),
     ("weather", ("rain", "thunder", "flood", "cyclone", "heatwave", "weather", "monsoon", "temperature",
                  "వర్ష", "వాతావరణ", "వరద")),
     ("crime", ("police", "arrest", "murder", "robbery", "theft", "crime", "accused", "fraud", "cheating",

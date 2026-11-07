@@ -37,6 +37,7 @@ from .storage import StorageError
 log = logging.getLogger(__name__)
 
 MAX_STORY_AGE = timedelta(hours=6)  # only fresh, ongoing news
+MAX_TEMPLE_AGE = timedelta(hours=24)  # temple news (festivals, darshan, brahmotsavam) stays useful for a day
 CAP_WINDOW = timedelta(hours=24)
 # An approved post older than this is never published (stale news; also lets the images repo prune
 # safely: IMAGES_KEEP_DAYS is at least 3 days).
@@ -207,6 +208,13 @@ def article_reel_quota(settings: Settings, engine: Engine, now: datetime) -> int
     return settings.article_daily + flex
 
 
+def _temple_reel_due(settings: Settings, engine: Engine, now: datetime, candidates: list[Story]) -> bool:
+    """TEMPLE_DAILY temple stories a day are guaranteed (devotional news is among the most-shared Telugu
+    content), whatever the learning loop says; the loop then decides how much more of it to make."""
+    return (settings.temple_daily > 0 and any(c.topic_hint == "temples" for c in candidates)
+            and db.count_posts_since(engine, now - CAP_WINDOW, NOT_COUNTED, topic="temples") < settings.temple_daily)
+
+
 def _article_reels_full(settings: Settings, engine: Engine, now: datetime) -> bool:
     return settings.reels_only and db.count_posts_since(
         engine, now - CAP_WINDOW, NOT_COUNTED, fmt="reel", kind="article") >= article_reel_quota(
@@ -300,7 +308,7 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
             summary.fetch_alert = "no stories fetched"
     fresh = []
     for s in stories:
-        if now - _aware(s.published_at) > MAX_STORY_AGE:
+        if now - _aware(s.published_at) > (MAX_TEMPLE_AGE if s.topic_hint == "temples" else MAX_STORY_AGE):
             summary.skipped_stale += 1
         else:
             fresh.append(s)
@@ -319,7 +327,10 @@ def _run(settings: Settings, deps: Deps, engine: Engine, ignore_slots: bool,
         if ctx.created >= settings.effective_per_run_cap:
             summary.per_run_cap_reached = True
             break
-        topic = learn.choose(engine, "topic", TOPICS, ctx.rng)
+        if _temple_reel_due(settings, engine, now, candidates):
+            topic = "temples"
+        else:
+            topic = learn.choose(engine, "topic", TOPICS, ctx.rng)
         story = _pick_story(candidates, topic)
         created_before = ctx.created
         try:

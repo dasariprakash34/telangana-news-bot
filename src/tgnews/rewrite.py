@@ -15,7 +15,7 @@ DEFAULT_MODEL = "claude-sonnet-5-5"  # Anthropic provider only; Gemini needs LLM
 STYLES = ("question", "number", "statement")
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
-    "sports", "education", "health", "business", "other",
+    "sports", "education", "health", "business", "temples", "other",
 )
 
 MAX_TOKENS = 4000
@@ -45,6 +45,9 @@ _SYSTEM_TEMPLATE = (
     "glance. Caption: first line is a one-sentence hook, then 2 to 3 short sentences with the key facts, "
     "and nothing else after the facts (a credit line only when the credit rule below asks for it). Do not use emojis. Do not copy "
     "English sentences; names of people and places stay as they are commonly written in Telugu.\n"
+    "Temple and devotional news (topic temples): stay factual and respectful, never communal or political, "
+    "never claim miracles, cures or blessings, and state darshan, ticket, timing or festival details only "
+    "exactly as the source gives them.\n"
     "{credit_rule}"
     "Reply with a single JSON object and nothing else, with keys: "
     "headline_te (string, at most 90 characters), "
