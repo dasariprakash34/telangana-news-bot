@@ -28,6 +28,7 @@ from typing import Callable, Iterable
 from .reel import MAX_REEL_SECONDS, ReelUnavailable, _run, _tool, cover_path, edge_tts_voice
 from .render import DEFAULT_THEME, FONT_PATH, PALETTE, TOPIC_LABEL, _map_data, _slug
 from .rewrite import RewrittenPost
+from .telugu_numbers import speakable
 
 ASSETS = Path(__file__).resolve().parent / "assets" / "reel"
 FPS = 24
@@ -58,9 +59,9 @@ def scenes_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> 
     points = [p.strip() for p in post.points_te if p.strip()]
     if not points:
         raise ReelUnavailable("a reel needs at least one key point")
-    head = post.headline_te.strip()
+    head = speakable(post.headline_te.strip())  # numbers spelled out, so the voice (and the captions) say them right
     closing = f"{CTA}."  # the reel never reads or shows the source line
-    sayings = [("headline", head), *[("point", p) for p in points], ("outro", closing)]
+    sayings = [("headline", head), *[("point", speakable(p)) for p in points], ("outro", closing)]
     total = len(sayings)
     scenes = []
     for i, (kind, text) in enumerate(sayings):
