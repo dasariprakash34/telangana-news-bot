@@ -54,7 +54,8 @@ def test_it_speaks_with_word_times_and_never_sends_the_key_in_the_body(tmp_path)
     assert (tmp_path / "v.mp3").read_bytes() == b"MP3" and [w[2] for w in words] == ["ab", "cd"]
     method, path, body = c.calls[-1]
     assert path.endswith("/text-to-speech/VOICE1/with-timestamps") and body["model_id"] == "eleven_v3"
-    assert body["voice_settings"] == {"speed": 1.2} and "sk_test" not in json.dumps(body)
+    assert body["voice_settings"] == {"speed": 1.2, "stability": 1.0} and body["language_code"] == "te"
+    assert "sk_test" not in json.dumps(body)
 
 
 def test_too_few_credits_for_the_whole_reel_uses_the_free_voice_from_the_start():
@@ -104,3 +105,49 @@ def test_running_out_of_credits_mid_reel_falls_back_and_stops_asking(tmp_path, m
     speak("two", "v", "+20%", tmp_path / "2.mp3")
     assert spoken == ["one", "two"] and (tmp_path / "2.mp3").read_bytes() == b"EDGE"
     assert sum(1 for m, p, b in c.calls if "text-to-speech" in p) == 1  # asked once, then the free voice
+
+
+def test_a_model_that_refuses_the_language_lock_is_asked_again_without_it(tmp_path):
+    def handler(request):
+        body = json.loads(request.content or b"{}")
+        if request.url.path.endswith("/user/subscription"):
+            return httpx.Response(200, json={"character_limit": 30000, "character_count": 0})
+        if "language_code" in body:
+            return httpx.Response(422, json={"detail": {"status": "unsupported"}})
+        return httpx.Response(200, json={"audio_base64": base64.b64encode(b"MP3").decode(), "alignment": ALIGN})
+
+    c = client(handler)
+    voices.pick_tts(POST, ENV, http=c)("ab cd", "v", "+20%", tmp_path / "v.mp3")
+    assert (tmp_path / "v.mp3").read_bytes() == b"MP3"
+    assert "language_code" not in c.calls[-1][2] and c.calls[-1][2]["voice_settings"]["speed"] == 1.2
+
+
+def test_the_language_can_be_set_or_switched_off_from_the_environment(tmp_path):
+    c = client(ok_timestamps)
+    voices.elevenlabs_voice("ab", "+20%", tmp_path / "a.mp3", env={**ENV, "ELEVENLABS_LANGUAGE": "hi"}, http=c)
+    voices.elevenlabs_voice("ab", "+20%", tmp_path / "b.mp3", env={**ENV, "ELEVENLABS_LANGUAGE": ""}, http=c)
+    assert c.calls[-2][2]["language_code"] == "hi" and "language_code" not in c.calls[-1][2]
+
+
+class FakeTelegram:
+    chat_id = "1"
+
+    def __init__(self):
+        self.sent = []
+
+    def upload(self, method, field, path, **payload):
+        self.sent.append((method, field, payload["caption"], path.read_bytes()))
+
+
+def test_voice_sample_sends_each_variant_to_telegram_and_reports_a_refusal(tmp_path):
+    def handler(request):
+        body = json.loads(request.content or b"{}")
+        if body.get("voice_settings", {}).get("stability") == 0.5 and "language_code" not in body:
+            return httpx.Response(401, json={"detail": {"status": "quota_exceeded"}})
+        return ok_timestamps(request)
+
+    tg = FakeTelegram()
+    report = voices.send_samples(ENV, tg, tmp_path, http=client(handler))
+    assert [r.split(":")[0] for r in report] == ["A", "B", "C"]
+    assert report[0].endswith("sent") and report[1].endswith("sent") and "quota_exceeded" in report[2]
+    assert [s[1] for s in tg.sent] == ["audio", "audio"] and all("Voice test" in s[2] for s in tg.sent)
