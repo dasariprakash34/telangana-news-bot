@@ -94,6 +94,9 @@ class RssSource:
     name: str
     fetch_text: Callable[[], str] | None = None
     timeout: float = 15.0
+    topic: str | None = None  # force every story's topic hint (a temple-only feed)
+    unfiltered: bool = False  # an official feed about our subject: skip the Telangana keyword filter
+    skip_titles: tuple[str, ...] = ()  # titles starting with these are not made into posts
 
     def _download(self) -> str:
         if self.fetch_text is not None:
@@ -111,7 +114,7 @@ class RssSource:
         for entry in feed.entries:
             url = (entry.get("link") or "").strip()
             title = _clean(entry.get("title", ""))
-            if not url or not title:
+            if not url or not title or title.startswith(self.skip_titles):
                 continue
             published_at = _entry_time(entry)
             if published_at is None:
@@ -126,7 +129,7 @@ class RssSource:
                     url=url,
                     source_name=self.name,
                     published_at=published_at,
-                    topic_hint=assign_topic_hint(title, summary),
+                    topic_hint=self.topic or assign_topic_hint(title, summary),
                 )
             )
         return stories
@@ -165,7 +168,7 @@ def fetch_stories(
                 report.failed += 1
             continue
         for s in stories:
-            if s.id in seen or not _matches(s, keywords):
+            if s.id in seen or not (getattr(src, "unfiltered", False) or _matches(s, keywords)):
                 continue
             seen.add(s.id)
             out.append(s)
@@ -177,4 +180,5 @@ def load_sources(path: str | Path) -> list[RssSource]:
     if not p.exists():
         return []
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return [RssSource(url=f["url"], name=f["name"]) for f in (data.get("feeds") or [])]
+    return [RssSource(url=f["url"], name=f["name"], topic=f.get("topic"), unfiltered=bool(f.get("unfiltered")),
+                      skip_titles=tuple(f.get("skip_titles") or ())) for f in (data.get("feeds") or [])]

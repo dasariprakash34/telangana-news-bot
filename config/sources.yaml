@@ -3,6 +3,12 @@
 # Republishing terms of these outlets are NOT yet checked by the owner. Review mode only
 # until they are confirmed.
 feeds:
+  # TTD's own press releases, board news and festival announcements (official; English | Telugu titles).
+  - name: TTD official news
+    url: https://news.tirumala.org/feed
+    topic: temples
+    unfiltered: true
+    skip_titles: ["Total pilgrims who had darshan"]
   - name: The Hindu
     url: https://www.thehindu.com/news/national/telangana/feeder/default.rss
   - name: The Hindu

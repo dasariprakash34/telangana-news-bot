@@ -188,7 +188,7 @@ class Settings:
     reels_only: bool = False  # REELS_ONLY=true: never post images; a story that cannot be a reel is skipped
     article_daily: int = 4  # fixed news-article reels a day (posting run, when reels_only)
     flex_daily: int = 2  # extra reels a day that go to whichever kind is reaching more people
-    temple_daily: int = 1  # temple stories a day that are always made when there is temple news
+    temple_daily: int = 2  # temple stories a day that are always made when there is temple news
 
     @property
     def effective_per_run_cap(self) -> int:
@@ -222,5 +222,5 @@ class Settings:
             reels_only=_parse_bool(env.get("REELS_ONLY"), False, "REELS_ONLY"),
             article_daily=_parse_count(env.get("ARTICLE_DAILY"), "ARTICLE_DAILY", 4),
             flex_daily=_parse_count(env.get("FLEX_DAILY"), "FLEX_DAILY", 2),
-            temple_daily=_parse_count(env.get("TEMPLE_DAILY"), "TEMPLE_DAILY", 1),
+            temple_daily=_parse_count(env.get("TEMPLE_DAILY"), "TEMPLE_DAILY", 2),
         )

@@ -15,7 +15,7 @@ from typing import Callable, Mapping, Sequence
 
 from sqlalchemy import create_engine
 
-from . import analyze, db, gate, learn, pipeline, publish, reel, report, viral
+from . import analyze, db, gate, learn, pipeline, publish, reel, report, ttd, viral
 from .config import ConfigError, Settings
 from .fetch import FetchReport, fetch_stories, load_sources
 from .gate import TelegramClient
@@ -73,7 +73,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
             up_video = build_video_uploader(env)
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
-    return Deps(fetch=lambda: fetch_stories(sources, report=report), fetch_report=report,
+    return Deps(fetch=lambda: fetch_stories(sources, report=report) + ttd.portal_stories(), fetch_report=report,
                 llm=llm, llm_model=llm_model, engine=engine, upload=up, instagram=ig, telegram=tg,
                 render_reel=make_reel, upload_video=up_video,
                 out_dir=Path(env.get("OUT_DIR") or tempfile.mkdtemp(prefix="tgnews-")))

@@ -47,7 +47,9 @@ _SYSTEM_TEMPLATE = (
     "English sentences; names of people and places stay as they are commonly written in Telugu.\n"
     "Temple and devotional news (topic temples): stay factual and respectful, never communal or political, "
     "never claim miracles, cures or blessings, and state darshan, ticket, timing or festival details only "
-    "exactly as the source gives them.\n"
+    "exactly as the source gives them. For ticket, quota, seva or booking announcements give every date, time and "
+    "amount exactly as written, and end the caption by telling viewers to book only on the official TTD website "
+    "ttdevasthanams.ap.gov.in and to beware of middlemen.\n"
     "{credit_rule}"
     "Reply with a single JSON object and nothing else, with keys: "
     "headline_te (string, at most 90 characters), "
@@ -160,6 +162,21 @@ def validate(post: RewrittenPost, require_credit: bool = True) -> list[str]:
         elif post.source_credit not in post.caption_te:
             problems.append("source_credit does not appear verbatim in caption_te")
     return problems
+
+
+_TELUGU_DIGITS = str.maketrans("౦౧౨౩౪౫౬౭౮౯", "0123456789")
+
+
+def _numbers(text: str) -> set[int]:
+    """Every whole number in `text` (Telugu digits too), so 06 and 6 are the same number."""
+    return {int(n) for n in re.findall(r"\d+", text.translate(_TELUGU_DIGITS))}
+
+
+def numbers_not_in_source(post: RewrittenPost, story: Story) -> list[str]:
+    """For temple news: every number in the post (dates, times, prices) must be in the story."""
+    extra = _numbers(" ".join([post.headline_te, *post.points_te, post.caption_te])) - _numbers(
+        f"{story.title} {story.summary}") - {0}
+    return [f"these numbers are not in the source, remove or correct them: {sorted(extra)[:6]}"] if extra else []
 
 
 def _neutralise(text: str) -> str:
@@ -277,6 +294,8 @@ def rewrite(
             last_exc = exc
             continue
         problems = validate(post, require_credit)
+        if story.topic_hint == "temples":  # a wrong date or time sends devotees to the wrong place
+            problems += numbers_not_in_source(post, story)
         if not problems:
             return post
         last_exc = ValueError("; ".join(problems))
