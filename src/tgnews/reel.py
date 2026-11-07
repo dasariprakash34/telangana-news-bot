@@ -135,7 +135,7 @@ def vertical_frame(slide: Path, out: Path) -> Path:
 # -- the reel -----------------------------------------------------------------
 def render_reel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND, *, voice: str,
                 rate: str, require_credit: bool = True, style: str = "animated",
-                tts: Callable[[str, str, str, Path], None] = edge_tts_voice,
+                tts: Callable[[str, str, str, Path], None] | None = None,
                 run: Callable[[list[str]], str] = _run,
                 render_slides: Callable = render_carousel,
                 animated: Callable | None = None) -> list[Path]:
@@ -145,6 +145,10 @@ def render_reel(post: RewrittenPost, out_dir, brand: str = DEFAULT_BRAND, *, voi
     headless Chrome (reel_anim.py). If Chrome or the 3D page is unavailable it falls back to the
     plain "slides" style (the carousel slides with a slow zoom), which needs only ffmpeg."""
     rate = getattr(post, "pace", None) or rate
+    if tts is None:  # ElevenLabs while it has credits (when configured), the free voice otherwise
+        from .voices import pick_tts  # lazy: voices imports this module
+
+        tts = pick_tts(post)
     if style == "animated":
         from .reel_anim import render_animated  # lazy: reel_anim imports this module
 

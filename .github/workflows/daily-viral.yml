@@ -56,3 +56,6 @@ jobs:
           REEL_VOICE: ${{ vars.REEL_VOICE }}
           REEL_RATE: ${{ vars.REEL_RATE }}
           REEL_STYLE: ${{ vars.REEL_STYLE }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ vars.ELEVENLABS_VOICE_ID }}
+          ELEVENLABS_MODEL: ${{ vars.ELEVENLABS_MODEL }}
