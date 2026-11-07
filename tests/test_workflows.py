@@ -14,7 +14,7 @@ WF_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WF_DIR.glob("*.yml"))
 LISTENER = "telegram-listener.yml"
 EXPECTED = {"post.yml", "publish-approved.yml", "analyze.yml", "report.yml", "refresh-token.yml", LISTENER,
-            "daily-viral.yml"}
+            "daily-viral.yml", "voice-sample.yml"}
 SETUP_PREFIXES = ("sudo apt-get ", "python -m pip install ")
 
 
@@ -123,6 +123,9 @@ class TestEachWorkflow:
 
     def test_installs_postgres_extra_and_shaping_libs(self, path):
         lines = "\n".join(run_lines(load(path)))
+        if path.name == "voice-sample.yml":  # only sends audio: needs neither the database nor Telegram text shaping
+            assert '-e "."' in lines
+            return
         extra = ('-e ".[postgres,reels,viral]"' if path.name == "daily-viral.yml"
                  else '-e ".[postgres,reels]"' if path.name in REEL_WORKFLOWS else '-e ".[postgres]"')
         assert extra in lines
@@ -260,6 +263,8 @@ def required_env(cmd: str) -> set[str]:
     storage for `run`; prune-images needs only the images repo). Telegram is optional in the code, but the workflows must pass it."""
     if cmd == "prune-images":  # no database, LLM or Instagram: only the images repo (and Telegram alerts)
         return PRUNE_ENV | {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
+    if cmd == "voice-sample":  # only ElevenLabs and Telegram: no database, LLM or Instagram
+        return {"ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
     need = {"DATABASE_URL"} if cmd != "dry-run" else set()
     if cmd in cli._NEEDS_LLM:
         # build_llm reads the key of whichever provider is selected, so a step must pass both

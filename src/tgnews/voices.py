@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 API = "https://api.elevenlabs.io/v1"
 DEFAULT_MODEL = "eleven_v3"
+DEFAULT_LANGUAGE = "te"  # Telugu: the model must not guess (it drifted into Hindi)
+DEFAULT_STABILITY = 1.0  # v3 "Robust": sticks to the script
 EXTRA_CHARS = 60  # the closing "follow" line the reel adds
 MIN_SPEED, MAX_SPEED = 0.7, 1.2  # the range ElevenLabs accepts
 
@@ -94,17 +96,43 @@ def _reason(resp: httpx.Response) -> str:
     return f"HTTP {resp.status_code}" + (f" {status}" if status else "")
 
 
+def request_bodies(text: str, model: str, rate: str, language: str, stability: float) -> list[dict]:
+    """The request, then simpler ones for a model that refuses a setting: language locked + steady voice +
+    speed, then without the language lock, then without voice settings, then just the text."""
+    full = {"text": text, "model_id": model, "voice_settings": {"speed": speed_for(rate), "stability": stability}}
+    if language:
+        full["language_code"] = language
+    bodies = [full]
+    if language:
+        bodies.append({k: v for k, v in full.items() if k != "language_code"})
+    bodies.append({k: v for k, v in full.items() if k not in ("voice_settings",)})
+    bodies.append({"text": text, "model_id": model})
+    out: list[dict] = []
+    for b in bodies:
+        if b not in out:
+            out.append(b)
+    return out
+
+
 def elevenlabs_voice(text: str, rate: str, path: Path, *, env: Mapping[str, str],
                      http: httpx.Client) -> list[tuple[float, float, str]]:
-    """Speak `text` into the mp3 at `path`; returns word times (empty when the model gives none)."""
+    """Speak `text` into the mp3 at `path`; returns word times (empty when the model gives none).
+
+    The language is locked (ELEVENLABS_LANGUAGE, default te) because the multilingual model otherwise guesses
+    it per sentence and can drift into Hindi; the voice is set steady (ELEVENLABS_STABILITY, default 1.0)."""
     key, voice = env["ELEVENLABS_API_KEY"].strip(), env["ELEVENLABS_VOICE_ID"].strip()
     model = (env.get("ELEVENLABS_MODEL") or "").strip() or DEFAULT_MODEL
-    body = {"text": text, "model_id": model, "voice_settings": {"speed": speed_for(rate)}}
+    language = (env.get("ELEVENLABS_LANGUAGE") if "ELEVENLABS_LANGUAGE" in env else DEFAULT_LANGUAGE) or ""
+    try:
+        stability = float((env.get("ELEVENLABS_STABILITY") or "").strip() or DEFAULT_STABILITY)
+    except ValueError:
+        stability = DEFAULT_STABILITY
     headers = {"xi-api-key": key}
     params = {"output_format": "mp3_44100_128"}
-    # with word times first; a model that cannot do that (or the speed setting) gets the plain request
-    for endpoint, payload in ((f"/text-to-speech/{voice}/with-timestamps", body),
-                              (f"/text-to-speech/{voice}", {k: v for k, v in body.items() if k != "voice_settings"})):
+    # with word times first; a model that cannot do that gets the plain request
+    attempts = [(f"/text-to-speech/{voice}/with-timestamps", b) for b in request_bodies(text, model, rate, language.strip(), stability)]
+    attempts.append((f"/text-to-speech/{voice}", {"text": text, "model_id": model}))
+    for endpoint, payload in attempts:
         try:
             resp = http.post(API + endpoint, headers=headers, params=params, json=payload, timeout=120)
         except httpx.HTTPError as exc:
@@ -154,3 +182,35 @@ def pick_tts(post: RewrittenPost, env: Mapping[str, str] | None = None, *,
         return edge_tts_voice(text, voice, rate, path) if sleep is None else edge_tts_voice(text, voice, rate, path, sleep)
 
     return speak
+
+
+SAMPLE_TEXT = ("తిరుమలలో శ్రీవారి ఆర్జిత సేవా టికెట్లు ఈరోజు మధ్యాహ్నం 3 గంటలకు అందుబాటులోకి వస్తాయి. "
+               "ఖమ్మం జిల్లాలో భారీ వర్షాల కారణంగా పలు రోడ్లు జలమయమయ్యాయి. "
+               "ఏఐ టెక్నాలజీతో కొత్త ఫోన్ మార్కెట్లోకి వచ్చింది, ధర 25,000 రూపాయలు.")
+SAMPLE_VARIANTS = (
+    ("A: Telugu locked, steady (the bot's default)", {"ELEVENLABS_LANGUAGE": "te", "ELEVENLABS_STABILITY": "1.0"}),
+    ("B: Telugu locked, natural", {"ELEVENLABS_LANGUAGE": "te", "ELEVENLABS_STABILITY": "0.5"}),
+    ("C: no language lock (what drifted)", {"ELEVENLABS_LANGUAGE": "", "ELEVENLABS_STABILITY": "0.5"}),
+)
+
+
+def send_samples(env: Mapping[str, str], telegram, out_dir: Path, *, http: httpx.Client | None = None) -> list[str]:
+    """Make the same Telugu lines in each variant and send each to Telegram; returns what was sent or why not."""
+    own = http is None
+    client = http or httpx.Client()
+    report: list[str] = []
+    try:
+        for label, extra in SAMPLE_VARIANTS:
+            path = out_dir / f"sample-{label[0]}.mp3"
+            try:
+                elevenlabs_voice(SAMPLE_TEXT, "+20%", path, env={**env, **extra}, http=client)
+            except ElevenUnavailable as exc:
+                report.append(f"{label}: {exc}")
+                continue
+            telegram.upload("sendAudio", "audio", path, chat_id=telegram.chat_id, caption=f"Voice test {label}",
+                            title=label[:30])
+            report.append(f"{label}: sent")
+    finally:
+        if own:
+            client.close()
+    return report

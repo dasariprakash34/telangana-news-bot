@@ -121,6 +121,7 @@ def _parser() -> argparse.ArgumentParser:
                              "depend on GitHub's unreliable cron")
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
+    sub.add_parser("voice-sample", help="send three ElevenLabs test voices (same Telugu lines) to Telegram")
     sub.add_parser("daily-viral", help="make today's trending-topic reel and send it to Telegram for approval")
     return p
 
@@ -296,6 +297,19 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             except Exception:
                 pass
             return 1
+    if args.command == "voice-sample":
+        from . import voices
+
+        if not voices.configured(env):
+            print("voice-sample: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID first", file=sys.stderr)
+            return 1
+        telegram = _env_telegram(env)
+        if telegram is None:
+            print("voice-sample: Telegram is not configured", file=sys.stderr)
+            return 1
+        for line in voices.send_samples(env, telegram, Path(tempfile.mkdtemp(prefix="tgnews-voice-"))):
+            print(line)
+        return 0
     purpose = {"run": "run", "dry-run": "dry-run", "publish-approved": "publish",
                "listen": "publish", "analyze": "analyze", "report": "report", "refresh-token": "refresh-token",
                "daily-viral": "daily-viral"}[args.command]
