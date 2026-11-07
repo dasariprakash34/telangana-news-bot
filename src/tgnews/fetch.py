@@ -28,7 +28,7 @@ TELANGANA_KEYWORDS: tuple[str, ...] = (
 
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
-    "sports", "education", "health", "business", "temples", "other",
+    "sports", "education", "health", "business", "temples", "cinema", "technology", "other",
 )
 
 # Checked in order; first topic with a matching word-prefix wins.
@@ -37,6 +37,9 @@ _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
                  "medaram", "srisailam", "kondagattu", "bhadrakali", "brahmotsav", "darshan", "jatara",
                  "ఆలయ", "గుడి", "తిరుమల", "టీటీడీ", "యాదాద్రి", "భద్రాచలం", "వేములవాడ", "బాసర", "మేడారం",
                  "శ్రీశైలం", "దర్శనం", "బ్రహ్మోత్సవ")),
+    ("cinema", ("movie", "film", "tollywood", "ott ", "trailer", "box office", "box-office", "actor", "actress",
+                "director", "teaser", "web series", "సినిమా", "చిత్రం", "హీరో", "హీరోయిన్", "ట్రైలర్", "టాలీవుడ్",
+                "ఓటీటీ", "నటుడు", "నటి ", "దర్శకుడు")),
     ("weather", ("rain", "thunder", "flood", "cyclone", "heatwave", "weather", "monsoon", "temperature",
                  "వర్ష", "వాతావరణ", "వరద")),
     ("crime", ("police", "arrest", "murder", "robbery", "theft", "crime", "accused", "fraud", "cheating",
@@ -52,6 +55,9 @@ _TOPIC_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
                    "విద్య", "పాఠశాల", "విశ్వవిద్యాలయ", "పరీక్ష")),
     ("health", ("hospital", "dengue", "doctor", "health", "disease", "vaccine", "medical", "fever",
                 "ఆసుపత్రి", "ఆరోగ్య")),
+    ("technology", ("ai ", "a.i.", "artificial intelligence", "chatgpt", "openai", "gemini", "smartphone",
+                    "5g", "laptop", "gadget", "software", "cyber", "robot", "isro", "satellite",
+                    "ఏఐ", "కృత్రిమ మేధ", "స్మార్ట్‌ఫోన్", "స్మార్ట్ఫోన్", "ఇస్రో", "టెక్నాలజీ")),
     ("business", ("sensex", "market", "startup", "invest", "company", "funding", "industry", "stock", "gst",
                   "వ్యాపార", "పెట్టుబడి")),
 )
@@ -97,6 +103,7 @@ class RssSource:
     topic: str | None = None  # force every story's topic hint (a temple-only feed)
     unfiltered: bool = False  # an official feed about our subject: skip the Telangana keyword filter
     skip_titles: tuple[str, ...] = ()  # titles starting with these are not made into posts
+    keywords: tuple[str, ...] = ()  # this feed's own relevance words, instead of the Telangana ones
 
     def _download(self) -> str:
         if self.fetch_text is not None:
@@ -168,7 +175,8 @@ def fetch_stories(
                 report.failed += 1
             continue
         for s in stories:
-            if s.id in seen or not (getattr(src, "unfiltered", False) or _matches(s, keywords)):
+            if s.id in seen or not (getattr(src, "unfiltered", False)
+                                    or _matches(s, getattr(src, "keywords", ()) or keywords)):
                 continue
             seen.add(s.id)
             out.append(s)
@@ -181,4 +189,5 @@ def load_sources(path: str | Path) -> list[RssSource]:
         return []
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     return [RssSource(url=f["url"], name=f["name"], topic=f.get("topic"), unfiltered=bool(f.get("unfiltered")),
-                      skip_titles=tuple(f.get("skip_titles") or ())) for f in (data.get("feeds") or [])]
+                      skip_titles=tuple(f.get("skip_titles") or ()),
+                      keywords=tuple(f.get("keywords") or ())) for f in (data.get("feeds") or [])]

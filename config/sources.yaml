@@ -33,3 +33,41 @@ feeds:
     url: https://www.ntnews.com/tag/temple/feed
   - name: Telangana Today
     url: https://telanganatoday.com/tag/bhadrachalam/feed
+  # More topics: cinema, technology, business, sports, education. Each feed sets its own topic. Cinema and cricket
+  # from national feeds are kept only when they are about the Telugu audience (their own keywords).
+  - name: Namasthe Telangana cinema
+    url: https://www.ntnews.com/category/cinema/feed
+    topic: cinema
+    unfiltered: true
+  - name: Telangana Today entertainment
+    url: https://telanganatoday.com/category/entertainment/feed
+    topic: cinema
+    unfiltered: true
+  - name: The Hindu movies
+    url: https://www.thehindu.com/entertainment/movies/feeder/default.rss
+    topic: cinema
+    keywords: [Telugu, Tollywood, Hyderabad, Telangana, Allu Arjun, Prabhas, Mahesh Babu, Ram Charan, Chiranjeevi, Nani, Pushpa, Rajamouli, Jr NTR, Balakrishna, Pawan Kalyan, Vijay Deverakonda, Samantha]
+  - name: The Hindu technology
+    url: https://www.thehindu.com/sci-tech/technology/feeder/default.rss
+    topic: technology
+    unfiltered: true
+  - name: The Hindu cricket
+    url: https://www.thehindu.com/sport/cricket/feeder/default.rss
+    topic: sports
+    keywords: [India, IPL, Sunrisers, Hyderabad, Telangana, Kohli, Rohit]
+  - name: Namasthe Telangana sports
+    url: https://www.ntnews.com/category/sports/feed
+    topic: sports
+    unfiltered: true
+  - name: Namasthe Telangana business
+    url: https://www.ntnews.com/category/business/feed
+    topic: business
+    unfiltered: true
+  - name: Telangana Today business
+    url: https://telanganatoday.com/category/business/feed
+    topic: business
+    unfiltered: true
+  - name: Telangana Today education
+    url: https://telanganatoday.com/category/education/feed
+    topic: education
+    unfiltered: true

@@ -89,7 +89,7 @@ _SPECIFIC = (
 )
 _TOPIC_EFFECT = {"politics": "politics", "crime": "crime", "weather": "fog", "jobs": "jobs",
                  "farming": "farming", "sports": "sports", "education": "education",
-                 "health": "health", "business": "business", "temples": "temples", "other": "other"}
+                 "health": "health", "business": "business", "temples": "temples", "cinema": "film", "technology": "tech", "other": "other"}
 # Scenes with their own colours (the rest use the topic's palette).
 _EFFECT_THEME = {
     "temples": ((84, 30, 8), (52, 17, 4), (255, 170, 50)),

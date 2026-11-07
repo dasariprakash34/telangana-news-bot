@@ -86,3 +86,23 @@ def test_a_date_or_time_that_is_not_in_the_source_is_caught():
     assert numbers_not_in_source(post("టికెట్లు 6 నవంబర్ సాయంత్రం 3 గంటలకు", ["ధర 300 రూపాయలు", "డిసెంబర్ 5"]), src) == []
     bad = numbers_not_in_source(post("టికెట్లు 7 నవంబర్", ["ధర 500 రూపాయలు"]), src)
     assert bad and "7" in bad[0] and "500" in bad[0]
+
+
+MOVIES = """<?xml version="1.0"?><rss version="2.0"><channel>
+<item><title>Prabhas starrer gets a release date</title><link>https://x/a</link><pubDate>Sat, 07 Nov 2026 04:37:00 +0000</pubDate><description>The film will release on 12 December.</description></item>
+<item><title>Hollywood sequel tops the US box office</title><link>https://x/b</link><pubDate>Sat, 07 Nov 2026 04:38:00 +0000</pubDate><description>A superhero film earned 80 million dollars.</description></item>
+</channel></rss>"""
+
+
+def test_a_feed_with_its_own_keywords_keeps_only_what_the_telugu_audience_cares_about():
+    src = RssSource(url="x", name="The Hindu movies", fetch_text=lambda: MOVIES, topic="cinema",
+                    keywords=("Prabhas", "Tollywood"))
+    [s] = fetch_stories([src])
+    assert s.title.startswith("Prabhas") and s.topic_hint == "cinema"
+
+
+def test_cinema_and_technology_are_topics_with_their_own_words():
+    from tgnews.fetch import assign_topic_hint
+    assert assign_topic_hint("Trailer of the new Tollywood film released", "") == "cinema"
+    assert assign_topic_hint("New ChatGPT feature launched", "") == "technology"
+    assert assign_topic_hint("Telangana spends most on ready-to-eat meals", "Download the Siasat app for Android") != "technology"
