@@ -76,6 +76,8 @@ _COLD = ("చలి", "పొగమంచు", "మంచు")
 # Story words that give a category its own illustration (checked after rain/heat/cold). The text is
 # compared with zero-width joiners removed, because Telugu uses them inside words like బ్యాట్స్‌మన్.
 _SPECIFIC = (
+    ("temples", ("ఆలయ", "గుడి", "తిరుమల", "టీటీడీ", "యాదాద్రి", "భద్రాచలం", "వేములవాడ", "బాసర", "మేడారం",
+                 "శ్రీశైలం", "బ్రహ్మోత్సవ", "temple", "TTD", "Tirumala")),
     ("cricket", ("క్రికెట్", "వికెట్", "ఓవర్", "టెస్ట్", "ఐపీఎల్", "బౌలర్", "బ్యాటర్", "బ్యాట్స్మన్", "పరుగుల",
                  "సెంచరీ", "ఇన్నింగ్స్", "టీ20", "వన్డే", "డకౌట్", "సిక్స్", "కెప్టెన్", "cricket", "wicket", "IPL")),
     ("space", ("ఇస్రో", "చంద్రయాన్", "అంతరిక్ష", "రాకెట్", "ఉపగ్రహ", "నాసా", "చంద్రుడ", "గ్రహం", "ISRO", "NASA")),
@@ -86,9 +88,10 @@ _SPECIFIC = (
 )
 _TOPIC_EFFECT = {"politics": "politics", "crime": "crime", "weather": "fog", "jobs": "jobs",
                  "farming": "farming", "sports": "sports", "education": "education",
-                 "health": "health", "business": "business", "other": "other"}
+                 "health": "health", "business": "business", "temples": "temples", "other": "other"}
 # Scenes with their own colours (the rest use the topic's palette).
 _EFFECT_THEME = {
+    "temples": ((84, 30, 8), (52, 17, 4), (255, 170, 50)),
     "cricket": ((10, 52, 34), (6, 32, 22), (140, 230, 130)),
     "space": ((14, 16, 48), (6, 6, 26), (170, 150, 255)),
     "tech": ((8, 28, 52), (4, 14, 32), (80, 220, 255)),

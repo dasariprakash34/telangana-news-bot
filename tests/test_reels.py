@@ -5,7 +5,7 @@ import json
 import math
 import random
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -743,3 +743,24 @@ def test_a_reel_without_a_cover_is_still_published(engine, tmp_path):
     assert db.transition_post_state(engine, p.id, PostState.draft, PostState.approved)
     pipeline.publish_approved(only_settings(), deps)
     assert "cover_url" not in ig.created[0]
+
+
+# -- temples ------------------------------------------------------------------------------------------------
+def temple_story(n):
+    return Story(id=f"t{n}", title=f"TTD announces darshan timings for Brahmotsavam {n}", summary="TTD said devotees "
+                 "can have darshan from 6 AM at Tirumala during the Brahmotsavam.", url=f"https://example.com/temple/{n}",
+                 source_name="Namasthe Telangana", published_at=NOW - timedelta(hours=20), topic_hint="temples")
+
+
+def test_a_temple_story_is_made_each_day_even_when_the_loop_prefers_other_topics(engine, tmp_path):
+    deps = reel_deps(engine, tmp_path, [story(1), story(2), temple_story(1)])
+    run = pipeline.run_once(only_settings(article_daily=1, per_run_cap=5), deps)
+    assert run.drafted == 1
+    row = engine.connect().execute(db.posts.select()).one()
+    assert row.topic == "temples" or db.story_seen(engine, temple_story(1).url)
+
+
+def test_temple_news_stays_fresh_for_a_day_other_news_for_six_hours(engine, tmp_path):
+    deps = reel_deps(engine, tmp_path, [temple_story(1), story(2, age_h=10)])
+    run = pipeline.run_once(only_settings(), deps)
+    assert run.skipped_stale == 1 and run.new == 1

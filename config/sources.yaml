@@ -3,6 +3,12 @@
 # Republishing terms of these outlets are NOT yet checked by the owner. Review mode only
 # until they are confirmed.
 feeds:
+  # TTD's own press releases, board news and festival announcements (official; English | Telugu titles).
+  - name: TTD official news
+    url: https://news.tirumala.org/feed
+    topic: temples
+    unfiltered: true
+    skip_titles: ["Total pilgrims who had darshan"]
   - name: The Hindu
     url: https://www.thehindu.com/news/national/telangana/feeder/default.rss
   - name: The Hindu
@@ -15,3 +21,15 @@ feeds:
     url: https://www.ntnews.com/feed
   - name: V6 Velugu
     url: https://www.v6velugu.com/feed
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/tag/ttd/feed
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/tag/yadadri/feed
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/tag/bhadrachalam/feed
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/tag/vemulawada/feed
+  - name: Namasthe Telangana
+    url: https://www.ntnews.com/tag/temple/feed
+  - name: Telangana Today
+    url: https://telanganatoday.com/tag/bhadrachalam/feed
