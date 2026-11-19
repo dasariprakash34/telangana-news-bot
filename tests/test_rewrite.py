@@ -194,3 +194,34 @@ def test_rewrite_without_credit_accepts_a_caption_with_no_source_line():
     post = rewrite(STORY, client, "statement", "m", require_credit=False)
     assert post.caption_te == NO_CREDIT_CAPTION
     assert "Do not mention the source" in client.calls[0]["system"]
+
+
+def test_quote_style_needs_a_real_quote_in_the_source():
+    from tgnews.rewrite import has_quote
+    from tgnews.models import Story
+    from datetime import datetime, timezone
+    def s(summary):
+        return Story(id="q", title="t", summary=summary, url="https://x", source_name="n",
+                     published_at=datetime(2026, 11, 19, tzinfo=timezone.utc))
+    assert has_quote(s('The CM said "we will compete only with the world" at the event.'))
+    assert has_quote(s("He said “no more power cuts in Hyderabad” on Monday."))
+    assert not has_quote(s("Rain lashed Hyderabad; roads were flooded."))
+    assert not has_quote(s('A "big" day.'))  # a scare-quoted word is not a quote
+
+
+def test_quote_style_falls_back_to_statement_without_a_quote_and_is_kept_with_one():
+    plain = rewrite(STORY, FakeClient([json.dumps(GOOD)]), "quote")
+    assert plain.headline_style == "statement"
+    quoted = replace(STORY, summary=STORY.summary + ' The mayor said "drains will be cleared by Friday night".')
+    client = FakeClient([json.dumps(GOOD)])
+    assert rewrite(quoted, client, "quote").headline_style == "quote"
+    assert "quotation marks" in client.calls[0]["messages"][0]["content"]
+
+
+def test_letters_from_another_indian_script_are_rejected():
+    from tgnews.rewrite import foreign_indic, validate
+    # a real live reel: a Hindi source leaked Devanagari into the Telugu headline (empty boxes on screen)
+    assert foreign_indic("రजत पाटीदार తన బ్యాటింగ్") and not foreign_indic("రజత్ పాటీదార్ 135 runs")
+    bad = good(headline_te="రजत पाटीदार సంచలన శతకం")
+    assert any("another script" in p for p in validate(bad, require_credit=False))
+    assert not any("another script" in p for p in validate(good(), require_credit=False))

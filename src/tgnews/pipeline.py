@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import StaticPool
 
-from . import db, gate, learn, publish, safety
+from . import db, gate, learn, photo, publish, safety
 from .config import Settings
 from .dedupe import dedupe
 from .fetch import FetchReport
@@ -78,6 +79,8 @@ class Deps:
     sleep: Callable[[float], None] = time.sleep
     check_shaping: Callable[[], None] = assert_shaping_available
     llm_model: str = DEFAULT_MODEL  # build_deps sets it from build_llm
+    # (photo query, topic, folder) -> a free photo of the story's place for the reel, or None
+    find_photo: Callable[[str | None, str | None, Path], Any] | None = None
 
 
 @dataclass
@@ -161,13 +164,18 @@ def active_slots(settings: Settings, now: datetime, engine: Engine) -> tuple[str
 
 
 # -- helpers ----------------------------------------------------------------
+MAX_HASHTAGS_TOTAL = 5  # Instagram's per-post cap since Dec 2025; fewer, specific tags work better
+
+
 def compose_caption(post: RewrittenPost) -> str:
-    """Caption body plus hashtags within Instagram's 2200-character limit: trailing hashtags are
-    dropped until it fits; the body is never truncated (too long on its own is a story error)."""
+    """Caption body plus hashtags within Instagram's 2200-character limit and its 5-hashtag cap:
+    trailing hashtags are dropped until it fits; the body is never truncated (too long on its own
+    is a story error)."""
     body = post.caption_te
     if len(body) > MAX_CAPTION_CHARS:
         raise RewriteFailed(f"caption is {len(body)} characters; Instagram allows {MAX_CAPTION_CHARS}")
-    extra = [h for h in post.hashtags if h not in body]
+    in_body = len(re.findall(r"#\S+", body))
+    extra = [h for h in post.hashtags if h not in body][:max(0, MAX_HASHTAGS_TOTAL - in_body)]
     while extra and len(body) + 2 + len(" ".join(extra)) > MAX_CAPTION_CHARS:
         extra.pop()
     return body + ("\n\n" + " ".join(extra) if extra else "")
@@ -378,6 +386,9 @@ def _process(ctx: _Ctx, story: Story) -> bool:
         pace = learn.choose(engine, "pace", learn.PACES, ctx.rng)
         design = learn.choose(engine, "design", learn.DESIGNS, ctx.rng)
         rewritten.pace, rewritten.design = pace, design
+        if deps.find_photo is not None and photo.attach(
+                rewritten, deps.find_photo(rewritten.photo_query, rewritten.topic, ctx.out_dir / story.id)):
+            design = rewritten.design  # "photo": a real picture of the place behind the hook
     caption = compose_caption(rewritten)
     ctx.seq += 1
     if ctx.dry_out is not None:
@@ -386,7 +397,7 @@ def _process(ctx: _Ctx, story: Story) -> bool:
     # Reels are new: they always go to Telegram for approval, even in auto mode.
     auto_publish = ctx.settings.mode == "auto" and verdict is Verdict.ALLOW and fmt != "reel"
     post_id = db.save_post(engine, story_id=story.id, format=fmt, topic=rewritten.topic,
-                           time_slot=ctx.slot, headline_style=style, state=PostState.draft,
+                           time_slot=ctx.slot, headline_style=rewritten.headline_style, state=PostState.draft,
                            kind="article", pace=pace, design=design)
     ctx.created += 1
     if ctx.cover_url:

@@ -6,6 +6,7 @@ rules or the mode setting.
 from __future__ import annotations
 
 import random
+import statistics
 import re
 from collections import defaultdict
 
@@ -25,7 +26,7 @@ EXPLOIT_PROBABILITY = 0.8
 _SLOT_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 _FIXED = {"topic": TOPICS, "format": FORMATS, "headline_style": STYLES, "kind": KINDS,
-          "pace": PACES, "design": DESIGNS}
+          "pace": PACES, "design": DESIGNS + ("photo",)}  # photo: set when one is found
 
 
 def validate_options(attribute: str, options) -> list[str]:
@@ -43,13 +44,15 @@ def validate_options(attribute: str, options) -> list[str]:
 
 
 def update_learning(engine: Engine) -> None:
-    """Recompute mean score and n per (dimension, key) from scored posts; replace atomically."""
+    """Recompute the typical (median) score and n per (dimension, key) from scored posts; replace
+    atomically. Median, not mean: reach is heavy-tailed, and one lucky reel would otherwise make its
+    slot or topic look best for weeks while the usual post there does badly."""
     sums: dict[tuple[str, str], list[float]] = defaultdict(list)
     for p in db.scored_posts(engine):
         for dim in ATTRIBUTES:
             if p[dim] is not None:
                 sums[(dim, p[dim])].append(p["score"])
-    db.replace_learning(engine, [(d, k, sum(v) / len(v), len(v))
+    db.replace_learning(engine, [(d, k, statistics.median(v), len(v))
                                  for (d, k), v in sorted(sums.items())])
 
 
