@@ -166,8 +166,20 @@ def telugu_share(text: str) -> float:
     return telugu / total if total else 0.0
 
 
+def foreign_indic(text: str) -> list[str]:
+    """Letters from other Indian scripts (Hindi, Kannada, Tamil...). The reel font is Telugu only, so
+    they render as empty boxes; a Hindi source once leaked "रजत पाटीदार" into a live reel this way."""
+    return sorted({ch for ch in text if "\u0900" <= ch <= "\u0dff" and not _is_telugu(ch)})
+
+
+def script_problems(post: RewrittenPost) -> list[str]:
+    bad = foreign_indic(" ".join([post.headline_te, *post.points_te, post.caption_te]))
+    return [f"write every word in Telugu script; these letters are from another script: {''.join(bad[:12])} "
+            f"(write names like రజత్ పాటీదార్ in Telugu letters)"] if bad else []
+
+
 def validate(post: RewrittenPost, require_credit: bool = True) -> list[str]:
-    problems: list[str] = []
+    problems: list[str] = script_problems(post)
     if telugu_share(post.headline_te) <= MIN_TELUGU_SHARE:
         problems.append("headline_te is not mostly Telugu script")
     if len(post.headline_te) > MAX_HEADLINE:

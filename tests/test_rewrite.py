@@ -216,3 +216,12 @@ def test_quote_style_falls_back_to_statement_without_a_quote_and_is_kept_with_on
     client = FakeClient([json.dumps(GOOD)])
     assert rewrite(quoted, client, "quote").headline_style == "quote"
     assert "quotation marks" in client.calls[0]["messages"][0]["content"]
+
+
+def test_letters_from_another_indian_script_are_rejected():
+    from tgnews.rewrite import foreign_indic, validate
+    # a real live reel: a Hindi source leaked Devanagari into the Telugu headline (empty boxes on screen)
+    assert foreign_indic("రजत पाटीदार తన బ్యాటింగ్") and not foreign_indic("రజత్ పాటీదార్ 135 runs")
+    bad = good(headline_te="రजत पाटीदार సంచలన శతకం")
+    assert any("another script" in p for p in validate(bad, require_credit=False))
+    assert not any("another script" in p for p in validate(good(), require_credit=False))

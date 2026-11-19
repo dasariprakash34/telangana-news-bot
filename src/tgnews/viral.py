@@ -32,7 +32,7 @@ from .llm import LLM_AUTH_ERRORS, LLMError, LLMRateLimited
 from .models import PostState, Story
 from .pipeline import Deps, PipelineError, _aware, compose_caption, sanitize_error, upload_cover
 from .reel import ReelUnavailable
-from .rewrite import (MAX_CAPTION, MAX_HEADLINE, MAX_HASHTAGS, TOPICS, RewrittenPost, telugu_share,
+from .rewrite import (MAX_CAPTION, MAX_HEADLINE, MAX_HASHTAGS, TOPICS, RewrittenPost, script_problems, telugu_share,
                       _neutralise, _strip_fences)
 
 log = logging.getLogger(__name__)
@@ -333,7 +333,7 @@ def _numbers(text: str) -> set[str]:
 
 
 def validate_script(post: RewrittenPost, facts: str) -> list[str]:
-    problems: list[str] = []
+    problems: list[str] = script_problems(post)
     if telugu_share(post.headline_te) <= 0.5:
         problems.append("headline_te is not mostly Telugu script")
     if len(post.headline_te) > MAX_HEADLINE:
