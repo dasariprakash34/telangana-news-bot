@@ -591,7 +591,9 @@ def test_compose_caption_respects_instagram_limit():
     assert len(out) <= 2200 and out.startswith(body) and out.endswith("#tag" + out[-2:])
     assert out.split("\n\n")[1].split() == tags[:len(out.split("\n\n")[1].split())]  # trailing dropped
     full = pipeline.compose_caption(RewrittenPost(caption_te="అ" * 100, hashtags=tags, **base))
-    assert full.split("\n\n")[1].split() == tags
+    assert full.split("\n\n")[1].split() == tags[:5]  # Instagram's 5-hashtag cap
+    two_in_body = pipeline.compose_caption(RewrittenPost(caption_te="అ #x #y", hashtags=tags, **base))
+    assert two_in_body.split("\n\n")[1].split() == tags[:3]
     exact = pipeline.compose_caption(RewrittenPost(caption_te="అ" * 2200, hashtags=tags, **base))
     assert exact == "అ" * 2200
     with pytest.raises(RewriteFailed):

@@ -4,6 +4,10 @@
 html,body{margin:0;width:1080px;height:1920px;overflow:hidden;background:#0b1020;
 font-family:TG,'Helvetica Neue',sans-serif;color:#fff}
 #bg{position:absolute;left:0;top:0}
+#photo{position:absolute;left:0;top:0;width:1080px;height:1920px;object-fit:cover;display:none;transform-origin:50% 38%}
+#shade{position:absolute;left:0;top:0;width:1080px;height:1920px;display:none;
+background:linear-gradient(180deg,rgba(0,0,0,.62) 0%,rgba(0,0,0,.18) 16%,rgba(0,0,0,.30) 50%,rgba(0,0,0,.72) 80%,rgba(0,0,0,.9) 100%)}
+body.onphoto #card{background:linear-gradient(160deg,rgba(8,10,18,.72),rgba(8,10,18,.58));backdrop-filter:blur(8px)}
 #stage{position:absolute;left:0;top:0;width:1080px;height:1920px;transform-origin:50% 45%}
 #map{position:absolute;left:150px;top:1030px;width:780px;overflow:visible}
 .top{position:absolute;top:70px;left:64px;font-size:40px;font-weight:700;letter-spacing:.5px}
@@ -27,6 +31,7 @@ border-top:2px solid var(--accent)}
 .prog{position:absolute;left:0;bottom:0;height:12px;background:var(--accent)}
 </style>
 <canvas id=bg width=1080 height=1920></canvas>
+<img id=photo alt=""><div id=shade></div>
 <div id=stage>
   <svg id=map xmlns="http://www.w3.org/2000/svg"><path id=mp pathLength="1" fill="none" stroke-width="6" stroke-linejoin="round"/>
     <circle id=hd r="15" /><circle id=hr r="15" fill="none" stroke-width="4"/><circle id=hr2 r="15" fill="none" stroke-width="4"/></svg>
@@ -42,7 +47,7 @@ const $=id=>document.getElementById(id), ctx=$('bg').getContext('2d'), stage=$('
 const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), lerp=(a,b,t)=>a+(b-a)*t;
 const eo=t=>1-Math.pow(1-clamp(t),3), eob=t=>{t=clamp(t);const c=1.9;return 1+(c+1)*Math.pow(t-1,3)+c*Math.pow(t-1,2)};
 const fx=$('fx').getContext('2d');
-let EFFECT='other', sp=null, TH={top:'#14213d',bottom:'#0e162b',accent:'#ffb74d'}, spans=[];
+let PHOTO=false, EFFECT='other', sp=null, TH={top:'#14213d',bottom:'#0e162b',accent:'#ffb74d'}, spans=[];
 const mix=(a,b,f)=>{const p=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));const x=p(a),y=p(b);
   return '#'+x.map((v,i)=>Math.round(lerp(v,y[i],f)).toString(16).padStart(2,'0')).join('')};
 function setup(spec,meta){
@@ -60,6 +65,12 @@ function setup(spec,meta){
   const card=$('card');card.style.top='400px';
   let size=spec.size||80;while(card.offsetHeight>600&&size>44){size-=4;w.style.fontSize=size+'px'}
   card.style.top=Math.round(400+(600-card.offsetHeight)/2)+'px';
+  // a real photo of the place (free licence) behind everything; the drawn scene and map step aside
+  const im=$('photo');PHOTO=!!meta.photo;
+  im.style.display=$('shade').style.display=PHOTO?'block':'none';$('map').style.display=PHOTO?'none':'block';
+  document.body.classList.toggle('onphoto',PHOTO);
+  if(PHOTO&&im.dataset.src!==meta.photo){im.dataset.src=meta.photo;im.src=meta.photo;return im.decode().then(()=>true,()=>true)}
+  return true;
 }
 function bg(t){
   const g=ctx.createLinearGradient(0,0,1080,1920);g.addColorStop(0,TH.top);g.addColorStop(.55,mix(TH.top,TH.accent,.1));g.addColorStop(1,TH.bottom);
@@ -276,14 +287,18 @@ HEROES.temples=function(t){
 function fxdraw(t){fx.clearRect(0,0,1080,1920);fx.save();try{(EFFECTS[EFFECT]||EFFECTS.other)(t);const h=HEROES[EFFECT];if(h){fx.save();try{h(t)}finally{fx.restore()}}}finally{fx.restore()}}
 
 function draw(t,dur){
-  bg(t);fxdraw(t);$('prog').style.width=(1080*clamp(t/dur))+'px';
+  if(PHOTO){fx.clearRect(0,0,1080,1920);  // slow push-in on the photo, continuous across scenes
+    $('photo').style.transform=`scale(${1.04+0.014*(sp.index+clamp(t/dur))})`}else{bg(t);fxdraw(t)}
+  $('prog').style.width=(1080*clamp(t/dur))+'px';
   stage.style.transform=`scale(${1+0.035*clamp(t/dur)})`;                    // slow push-in
   const c=$('card'),p=eob(t/.45),head=sp.kind==='headline';
-  if(head){ // 3D glass card settling out of depth, then a gentle float
+  if(head&&sp.first){ // the hook: readable on frame 1 (no fly-in, no fade), only a gentle float
+    c.style.transform=`perspective(1500px) rotateX(${3+Math.sin(t*1.3)*1.6}deg) rotateY(${-3+Math.cos(t*1.1)*2.2}deg)`;
+  }else if(head){ // 3D glass card settling out of depth, then a gentle float
     const rx=lerp(38,3+Math.sin(t*1.3)*1.6,eo(t/.7)),ry=lerp(-24,-3+Math.cos(t*1.1)*2.2,eo(t/.7));
     c.style.transform=`perspective(1500px) translateY(${(1-p)*260}px) rotateX(${rx}deg) rotateY(${ry}deg) translateZ(${lerp(-260,0,eo(t/.6))}px)`;
   }else{c.style.transform=`translateY(${(1-p)*170}px) scale(${.92+.08*p})`}
-  c.style.opacity=clamp(t/.18);
+  c.style.opacity=sp.first?1:clamp(t/.18);
   $('ticker').style.transform=`translateX(${(1-eo((t+.1)/.5))*-1100}px)`;
   // Telangana outline draws itself on the first scene, then stays as a faint watermark; Hyderabad pulses
   const mp=$('mp');mp.style.strokeDasharray=1;mp.style.strokeDashoffset=sp.first?(1-eo(t/1.3)):0;
@@ -296,7 +311,7 @@ function draw(t,dur){
     if(i<cur){e.style.color='#fff';e.style.opacity=1;e.style.transform='scale(1)'}
     else if(i===cur){const k=eob((t-sp.words[i].t)/.18);e.style.color=TH.accent;e.style.opacity=1;e.style.transform=`scale(${1+.08*k})`;
       e.style.textShadow=`0 0 28px ${TH.accent}99`}
-    else{e.style.color='#fff';e.style.opacity=.34;e.style.transform='scale(1)'}
+    else{e.style.color='#fff';e.style.opacity=sp.first?1:.34;e.style.transform='scale(1)'} // hook lit from frame 1
     if(i!==cur)e.style.textShadow='';
   });
 }

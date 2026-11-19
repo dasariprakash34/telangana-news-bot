@@ -166,3 +166,13 @@ def test_flex_kind_follows_the_reach_and_is_fixed_for_the_day(engine):
     first = learn.flex_kind(engine, "20261102")
     db.set_kv(engine, "learning_changed", "x")
     assert learn.flex_kind(engine, "20261102") == first  # stored for the day
+
+
+def test_one_viral_outlier_does_not_make_its_option_the_winner(engine):
+    for score in (10, 12, 2000):  # one lucky reel at 04:00, two ordinary ones
+        add(engine, score, slot="04:00")
+    for score in (40, 45, 50):  # 18:00 does steadily better
+        add(engine, score, slot="18:00")
+    learn.update_learning(engine)
+    slots = db.get_learning(engine, "time_slot")
+    assert slots["04:00"] == (pytest.approx(12), 3) and slots["18:00"] == (pytest.approx(45), 3)

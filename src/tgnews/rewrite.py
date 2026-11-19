@@ -12,7 +12,7 @@ from tgnews.models import Story
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-sonnet-5-5"  # Anthropic provider only; Gemini needs LLM_MODEL
-STYLES = ("question", "number", "statement")
+STYLES = ("question", "number", "statement", "quote")  # quote: led by the speaker's own words (see _QUOTE_RE)
 TOPICS = (
     "politics", "crime", "weather", "jobs", "farming",
     "sports", "education", "health", "business", "temples", "cinema", "technology", "other",
@@ -21,7 +21,7 @@ TOPICS = (
 MAX_TOKENS = 4000
 MAX_HEADLINE = 90
 MAX_CAPTION = 2000
-MAX_HASHTAGS = 10
+MAX_HASHTAGS = 5  # Instagram's per-post cap since Dec 2025
 MAX_POINT = 120
 MIN_POINTS, MAX_POINTS = 2, 4
 MIN_TELUGU_SHARE = 0.5
@@ -40,11 +40,26 @@ _SYSTEM_TEMPLATE = (
     "Telugu (వ్యావహారిక భాష), NOT stiff bookish Telugu and NOT a word-for-word translation of the "
     "English. Use short, clear sentences with natural word order (subject, object, verb). Keep widely "
     "used English words that Telugu news itself uses (police, bus, metro, GHMC, app) in Telugu script "
-    "instead of coining heavy Sanskritised words. Headline: punchy, at most about 10 words, no full stop, "
-    "put the most important fact first. Each point: one short, complete sentence a reader can grasp at a "
-    "glance. Caption: first line is a one-sentence hook, then 2 to 3 short sentences with the key facts, "
-    "and nothing else after the facts (a credit line only when the credit rule below asks for it). Do not use emojis. Do not copy "
-    "English sentences; names of people and places stay as they are commonly written in Telugu.\n"
+    "instead of coining heavy Sanskritised words.\n"
+    "Headline: it is the reel's first frame, read in under two seconds by someone still scrolling. At most "
+    "about 8 words, no full stop. Open with the place (district, town or Hyderabad area) or the person the "
+    "story is about, then the one most concrete fact: a number, a name, what happened or what changes. "
+    "Never a vague tease, and never turn a confirmed fact into a doubt with a question mark. Do not spend "
+    "words on filler like సంచలనం, షాక్ or కలకలం when a concrete fact can stand in their place.\n"
+    "Points: each one short, complete sentence a reader can grasp at a glance, in order: what happened, "
+    "the key details, and last, who it affects or what people should do, only when the source says so.\n"
+    "Caption (the reel already carries the hook, so the caption gives context and search words): line 1 "
+    "is one plain sentence of at most about 120 characters with the place name and the main fact. Then 2 "
+    "to 3 short sentences with the key facts, naming the district or city and the topic in the words "
+    "people type into search (for example హైదరాబాద్ వర్షం, టీఎస్ఆర్టీసీ బస్సు ఛార్జీలు). Then one last line "
+    "asking viewers to share the post with someone it affects, written to fit this story (for example "
+    "ఈ రూట్‌లో ప్రయాణించే వాళ్లకి షేర్ చేయండి), and nothing else after it (a credit line only when the "
+    "credit rule below asks for it). Do not use emojis. Do not copy English sentences; names of people "
+    "and places stay as they are commonly written in Telugu.\n"
+    "Hashtags: 3 to 5 specific labels, the place and the topic (for example #Vikarabad #Telangana "
+    "#TelanganaNews); never generic tags like #viral, #trending, #explore or #fyp.\n"
+    "Topic: the suggested topic is only the feed's guess; choose the topic the story is actually about "
+    "(a leopard seen near a village is other, not farming).\n"
     "Temple and devotional news (topic temples): stay factual and respectful, never communal or political, "
     "never claim miracles, cures or blessings, and state darshan, ticket, timing or festival details only "
     "exactly as the source gives them. For ticket, quota, seva or booking announcements give every date, time and "
@@ -57,9 +72,13 @@ _SYSTEM_TEMPLATE = (
     "headline_te (string, at most 90 characters), "
     "points_te (list of 2 to 4 strings, each at most 120 characters), "
     "caption_te (string, at most 2000 characters, mostly Telugu), "
-    "hashtags (list of at most 10 strings, each starting with # and without spaces), "
+    "hashtags (list of at most 5 strings, each starting with # and without spaces), "
     "source_credit (string), "
-    "topic (one of: " + ", ".join(TOPICS) + ")."
+    "topic (one of: " + ", ".join(TOPICS) + "), "
+    "photo_query_en (string: 1 to 4 English words naming the town, district or public landmark the "
+    "story happens at, to find a real photo of that place, for example 'Vikarabad', 'Charminar "
+    "Hyderabad', 'Tirumala temple', 'Hyderabad Metro'; never a person's name; empty when there is no "
+    "clear place)."
 )
 
 _CREDIT_REQUIRED_RULE = (
@@ -69,7 +88,7 @@ _CREDIT_REQUIRED_RULE = (
 )
 _CREDIT_OPTIONAL_RULE = (
     "Do not mention the source or publisher name anywhere in headline_te, points_te or caption_te; end the "
-    "caption after the key facts. Still copy the given source name into the source_credit field.\n"
+    "caption with the share line. Still copy the given source name into the source_credit field.\n"
 )
 
 
@@ -81,10 +100,23 @@ def system_prompt(require_credit: bool = True) -> str:
 SYSTEM_PROMPT = system_prompt(True)  # default (credit required); kept for callers and tests
 
 _STYLE_GUIDE = {
-    "question": "Write the headline as a question that makes the reader curious.",
-    "number": "Write the headline around a concrete number from the source.",
+    "question": "Write the headline as the question a local viewer would ask about this news (what "
+                "changes, for whom, when), one the points then answer. Never question a confirmed fact.",
+    "number": "Write the headline around the one number in the source that would surprise a local "
+              "viewer (for example 107 challans on one bike); not a date, not a routine amount.",
+    "quote": "Open the headline with the most striking short line someone actually says in the source "
+             "(it appears there in quotation marks), faithfully put into Telugu, in quotation marks, then "
+             "the speaker's name. Never invent, sharpen or shorten the meaning of a quote.",
     "statement": "Write the headline as a clear, direct statement.",
 }
+
+
+_QUOTE_RE = re.compile(r"[\"“”‘’][^\"“”‘’]{12,}[\"“”‘’]")
+
+
+def has_quote(story: Story) -> bool:
+    """True when the source quotes someone directly (a quoted run of 12+ characters)."""
+    return bool(_QUOTE_RE.search(f"{story.title} {story.summary}"))
 
 
 class RewriteFailed(Exception):
@@ -111,6 +143,9 @@ class RewrittenPost:
     effect: str | None = None  # background effect name, instead of the one chosen from the news
     pace: str | None = None  # voice speed for this reel (learned), instead of REEL_RATE
     design: str | None = None  # reel look (learned): "scene" or "topic"
+    photo_query: str | None = None  # English words for a free photo of the story's place (photo.py)
+    photo_path: str | None = None  # the photo found for the reel background, when there is one
+    photo_credit: str | None = None  # its licence credit, which also goes into the caption
 
 
 def _is_telugu(ch: str) -> bool:
@@ -241,10 +276,12 @@ def _parse(text: str, story: Story, style_hint: str) -> RewrittenPost:
         headline_te=need_str("headline_te"),
         points_te=need_str_list("points_te"),
         caption_te=need_str("caption_te"),
-        hashtags=need_str_list("hashtags"),
+        hashtags=need_str_list("hashtags")[:MAX_HASHTAGS],  # a 6th tag is trimmed, not worth a retry
         source_credit=story.source_name,
         topic=topic,
         headline_style=style_hint,
+        photo_query=(data.get("photo_query_en") or "").strip()[:80] or None
+        if isinstance(data.get("photo_query_en"), str) else None,
     )
 
 
@@ -253,6 +290,8 @@ def rewrite(
 ) -> RewrittenPost:
     if style_hint not in STYLES:
         raise ValueError(f"style_hint must be one of {STYLES}, got {style_hint!r}")
+    if style_hint == "quote" and not has_quote(story):  # nobody is quoted: nothing to lead with
+        style_hint = "statement"
     if not story.summary or not story.summary.strip():
         raise RewriteFailed("story has no summary to rewrite from")
 

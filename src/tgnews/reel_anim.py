@@ -35,7 +35,9 @@ FPS = 24
 JPEG_QUALITY = 85
 VOICE_PAUSE = 0.6  # seconds between voice requests
 SCENE_TAIL = 0.2  # a short beat after a sentence, then a hard cut: reels do not idle
-CTA = "మరిన్ని తెలంగాణ వార్తల కోసం ఫాలో అవ్వండి"
+# One ask, and the one that spreads a news reel: a send. Shares (DM sends) are the strongest reach
+# signal Instagram has; a generic "follow for more" is the weakest ask and the outro everyone skips.
+CTA = "ఈ వార్త తెలియాల్సిన వాళ్లకి షేర్ చేయండి"
 TICKER_TAG = "తాజా వార్త"
 _CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
 _MAC_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -174,9 +176,19 @@ def meta_for(post: RewrittenPost, brand: str, require_credit: bool = True) -> di
     return {"label": brand,
             "chip": getattr(post, "badge", None) or TOPIC_LABEL.get(post.topic, TOPIC_LABEL["other"]),
             "tag": getattr(post, "ticker_tag", None) or TICKER_TAG, "ticker": brand, "effect": effect,
-            "foot": "AI voice", "map": map_shape(),
+            "foot": "AI voice", "map": map_shape(), **_photo_meta(post),
             "theme": {"top": _hex(theme.bg_top), "bottom": _hex(theme.bg_bottom),
                       "accent": _hex(theme.accent)}}
+
+
+def _photo_meta(post: RewrittenPost) -> dict:
+    """The place photo (photo.py) as a file URL for the page, and its licence credit shown on screen
+    as well as in the caption."""
+    path = getattr(post, "photo_path", None)
+    if not path or not Path(path).is_file():
+        return {}
+    credit = (getattr(post, "photo_credit", None) or "").removeprefix("ఫోటో: ")
+    return {"photo": Path(path).resolve().as_uri(), "foot": f"AI voice · Photo: {credit}"[:110]}
 
 
 # -- Chrome over the DevTools protocol ---------------------------------------------------------

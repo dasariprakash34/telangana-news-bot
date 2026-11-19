@@ -461,3 +461,12 @@ def test_a_late_or_dropped_run_catches_up_on_the_slots_before_it(tmp_path):
     assert [m[1] for m in made[:3]] == ["evening", "afternoon", "midday"]  # newest slot first, then earlier ones
     assert all(m[0] == "created" for m in made[:3])
 
+
+
+def test_viral_slots_setting_keeps_only_the_named_slots():
+    from tgnews.viral import SLOTS, enabled_slots
+    every = {s[0] for s in SLOTS}
+    assert enabled_slots({}) == every and enabled_slots({"VIRAL_SLOTS": ""}) == every
+    assert enabled_slots({"VIRAL_SLOTS": "evening"}) == {"evening"}
+    assert enabled_slots({"VIRAL_SLOTS": "evening, flex-b"}) == {"evening", "flex-b"}
+    assert enabled_slots({"VIRAL_SLOTS": "evenng"}) == every  # a typo leaves them all on

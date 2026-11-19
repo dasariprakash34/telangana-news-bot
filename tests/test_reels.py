@@ -325,6 +325,25 @@ def test_reel_becomes_a_draft_with_video_preview(engine, tmp_path):
     assert row.slides == [f"https://cdn.example.com/2026-10-28/{p.story_id}/reel.mp4"]
 
 
+def test_a_found_place_photo_is_drawn_credited_and_recorded_as_the_design(engine, tmp_path):
+    from tgnews import photo
+    seen = {}
+
+    def find_photo(query, topic, folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "photo.jpg").write_bytes(b"\xff\xd8x")
+        seen["topic"] = topic
+        return photo.Photo(path=folder / "photo.jpg", credit="ఫోటో: Ravi, CC BY 2.0, Wikimedia Commons", title="t")
+
+    deps = reel_deps(engine, tmp_path, [story(1)], find_photo=find_photo)
+    pipeline.run_once(reel_settings(), deps)
+    [p] = all_posts(engine)
+    assert p.format == "reel" and seen
+    assert "\n\nఫోటో: Ravi, CC BY 2.0, Wikimedia Commons\n\n#Hyderabad" in p.caption  # credit, then tags
+    row = engine.connect().execute(db.posts.select()).first()
+    assert row.design == "photo"
+
+
 def test_reel_failure_falls_back_to_carousel(engine, tmp_path):
     tg = FakeTG()
     deps = reel_deps(engine, tmp_path, [story(1)], tg=tg, fail=ReelUnavailable("voice down"))
@@ -386,7 +405,7 @@ def test_one_scene_per_sentence_headline_points_then_closing():
     assert [s["kind"] for s in scenes] == ["headline", "point", "point", "point", "outro"]
     assert [s["say"] for s in scenes[:4]] == ["హైదరాబాద్‌లో భారీ వర్షం", "మొదటి అంశం", "రెండో అంశం", "మూడో అంశం"]
     assert [s["num"] for s in scenes] == [0, 1, 2, 3, 0]
-    assert "ఫాలో" in scenes[-1]["say"] and "మూలం" not in scenes[-1]["say"]  # the reel never reads the source
+    assert "షేర్" in scenes[-1]["say"] and "మూలం" not in scenes[-1]["say"]  # the reel never reads the source
     assert scenes[0]["first"] and not scenes[1]["first"] and scenes[2]["total"] == 5
     assert all(s["size"] >= 56 for s in scenes)
 
