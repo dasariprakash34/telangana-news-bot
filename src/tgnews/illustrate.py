@@ -54,7 +54,11 @@ def draw(scene: str, out: Path, *, seed: int | None = None, env: Mapping[str, st
         if own:
             client.close()
     if resp.status_code != 200:
-        raise IllustrationUnavailable(f"Workers AI answered {resp.status_code}")
+        try:  # Cloudflare's own error text (code + message) never contains the token
+            errs = "; ".join(f"{e.get('code')}: {e.get('message')}" for e in resp.json().get("errors", []))[:300]
+        except ValueError:
+            errs = ""
+        raise IllustrationUnavailable(f"Workers AI answered {resp.status_code} {errs}".strip())
     try:
         data = base64.b64decode(resp.json()["result"]["image"])
     except (ValueError, KeyError, TypeError):
