@@ -41,9 +41,7 @@ def draw(scene: str, out: Path, *, seed: int | None = None, env: Mapping[str, st
         raise IllustrationUnavailable("CF_ACCOUNT_ID / CF_API_TOKEN are not set")
     url = (f"https://api.cloudflare.com/client/v4/accounts/{env['CF_ACCOUNT_ID'].strip()}"
            f"/ai/run/{MODEL}")
-    body: dict = {"prompt": f"{scene}. {STYLE}", "steps": STEPS}
-    if seed is not None:
-        body["seed"] = int(seed)
+    body: dict = {"prompt": f"{scene}. {STYLE}", "steps": STEPS}  # FLUX schnell here takes no seed
     own = http is None
     client = http or httpx.Client(timeout=120)
     try:
