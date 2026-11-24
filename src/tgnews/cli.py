@@ -123,6 +123,7 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
     sub.add_parser("voice-sample", help="send three ElevenLabs test voices (same Telugu lines) to Telegram")
+    sub.add_parser("story-sample", help="draw three test story scenes (Cloudflare Workers AI) and send them to Telegram")
     sub.add_parser("daily-viral", help="make today's trending-topic reel and send it to Telegram for approval")
     return p
 
@@ -298,6 +299,18 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             except Exception:
                 pass
             return 1
+    if args.command == "story-sample":
+        from . import illustrate
+
+        if not illustrate.configured(env):
+            print("story-sample: set CF_ACCOUNT_ID and CF_API_TOKEN first", file=sys.stderr)
+            return 1
+        out = Path(env.get("OUT_DIR") or "story-sample")
+        out.mkdir(parents=True, exist_ok=True)
+        report = illustrate.send_sample(env, _env_telegram(env), out)
+        for line in report:
+            print(line)
+        return 0 if any("drawn" in line for line in report) else 1
     if args.command == "voice-sample":
         from . import voices
 

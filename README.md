@@ -216,3 +216,10 @@ Once a day (18:00 IST) `tgnews daily-viral` makes a **one-minute Telugu reel abo
 - **Look:** the same animated reel as the news reels, with a "వైరల్" chip and a "ట్రెండింగ్" ticker. The reel never shows a source name.
 - Needs the same secrets and variables as the posting workflow (`GEMINI_API_KEY` or Anthropic, `DATABASE_URL`, `IMAGES_GH_*`, `TELEGRAM_*`) and the `viral` extra (`trafilatura`), which the workflow installs. To stop it, disable the `tgnews daily viral` workflow in the Actions tab.
 - The slot comes from the UTC hour the run starts in (`SLOTS` in `src/tgnews/viral.py`; the workflow's three crons match it). Run it by hand from the Actions tab to test: it makes the slot for the current hour.
+
+## Story reels (illustrations)
+
+Story reels are illustrated with Cloudflare Workers AI (FLUX schnell, inside the free daily allowance). Add two
+repository secrets: `CF_ACCOUNT_ID` and `CF_API_TOKEN` (a token from the Workers AI template only). The workflow
+`story-sample.yml` (`tgnews story-sample`) draws three test scenes, sends them to Telegram and keeps them as a
+run artifact, so the look can be judged before anything is posted.
