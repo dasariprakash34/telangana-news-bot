@@ -67,9 +67,10 @@ function setup(spec,meta){
   card.style.top=Math.round(400+(600-card.offsetHeight)/2)+'px';
   // a real photo of the place (free licence) behind everything; the drawn scene and map step aside
   const im=$('photo');PHOTO=!!meta.photo;
+  const pick=(meta.photos&&meta.photos.length)?meta.photos[spec.index%meta.photos.length]:meta.photo; // a new photo each sentence
   im.style.display=$('shade').style.display=PHOTO?'block':'none';$('map').style.display=PHOTO?'none':'block';
   document.body.classList.toggle('onphoto',PHOTO);
-  if(PHOTO&&im.dataset.src!==meta.photo){im.dataset.src=meta.photo;im.src=meta.photo;return im.decode().then(()=>true,()=>true)}
+  if(PHOTO&&im.dataset.src!==pick){im.dataset.src=pick;im.src=pick;return im.decode().then(()=>true,()=>true)}
   return true;
 }
 function bg(t){

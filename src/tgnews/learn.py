@@ -18,7 +18,7 @@ from .rewrite import STYLES, TOPICS
 ATTRIBUTES = ("topic", "format", "time_slot", "headline_style", "kind", "pace", "design")
 FORMATS = ("card", "carousel")
 KINDS = ("viral", "article")  # where the day's flex reels go
-PACES = ("+10%", "+20%", "+30%")  # how fast the voice speaks
+PACES = ("+0%", "+5%", "+10%")  # how fast the voice speaks; the storyteller reels that travel run ~113 wpm
 DESIGNS = ("scene", "topic")  # reel look: a scene that follows the story, or the topic's own scene
 SCORED_THRESHOLD = 12  # reels show their reach within a day, so the loop starts learning early
 MIN_N_PER_OPTION = 2

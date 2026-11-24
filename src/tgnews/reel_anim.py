@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -30,11 +32,15 @@ from .render import DEFAULT_THEME, FONT_PATH, PALETTE, TOPIC_LABEL, _map_data, _
 from .rewrite import RewrittenPost
 from .telugu_numbers import speakable
 
+log = logging.getLogger(__name__)
 ASSETS = Path(__file__).resolve().parent / "assets" / "reel"
 FPS = 24
 JPEG_QUALITY = 85
 VOICE_PAUSE = 0.6  # seconds between voice requests
-SCENE_TAIL = 0.2  # a short beat after a sentence, then a hard cut: reels do not idle
+SCENE_TAIL = 0.45  # a breath after each sentence: the storyteller reels that travel pause; ours ran on
+BED = ASSETS / "bed.m4a"  # the project's own tanpura-style drone (tools/make_bed.py), under the voice
+BED_GAIN = 0.05  # bed level before ducking: measured to sit like the reference (quiet moments near -55 dB, voice ~-19)
+TARGET_LUFS = -14  # Instagram's playback loudness
 # One ask, and the one that spreads a news reel: a send. Shares (DM sends) are the strongest reach
 # signal Instagram has; a generic "follow for more" is the weakest ask and the outro everyone skips.
 CTA = "ఈ వార్త తెలియాల్సిన వాళ్లకి షేర్ చేయండి"
@@ -187,8 +193,19 @@ def _photo_meta(post: RewrittenPost) -> dict:
     path = getattr(post, "photo_path", None)
     if not path or not Path(path).is_file():
         return {}
-    credit = (getattr(post, "photo_credit", None) or "").removeprefix("ఫోటో: ")
-    return {"photo": Path(path).resolve().as_uri(), "foot": f"AI voice · Photo: {credit}"[:110]}
+    credit = (getattr(post, "photo_credit", None) or "").removeprefix("ఫోటోలు: ").removeprefix("ఫోటో: ")
+    paths = [path, *[p for p in (getattr(post, "photo_more", None) or []) if Path(p).is_file()]]
+    return {"photo": Path(path).resolve().as_uri(), "photos": [Path(p).resolve().as_uri() for p in paths],
+            "foot": _photo_foot(credit)}
+
+
+def _photo_foot(credit: str) -> str:
+    """Short on-screen credit (the full one, every author, is in the caption): one author's name when
+    there is one, else the source and licences."""
+    licences = sorted(set(re.findall(r"CC BY(?:-SA)? [\d.]+|CC0|Public domain", credit)))
+    if ";" not in credit and len(credit) <= 70:
+        return f"AI voice · Photo: {credit}"
+    return f"AI voice · Photos: Wikimedia Commons, {licences[-1] if licences else 'free licence'} (see caption)"
 
 
 # -- Chrome over the DevTools protocol ---------------------------------------------------------
@@ -360,7 +377,29 @@ def render_animated(post: RewrittenPost, out_dir, brand: str, *, voice: str, rat
             segments.append(seg)
     listing = out / f"segments-{slug}.txt"
     listing.write_text("".join(f"file '{s.resolve()}'\n" for s in segments), encoding="utf-8")
-    final = out / f"reel-{slug}.mp4"
+    joined, final = out / f"joined-{slug}.mp4", out / f"reel-{slug}.mp4"
     run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
-         "-c", "copy", "-movflags", "+faststart", str(final)])
+         "-c", "copy", "-movflags", "+faststart", str(joined)])
+    try:
+        run(bed_mix_cmd(ffmpeg, joined, final, total))
+    except ReelUnavailable as exc:  # the music is a nice-to-have: never lose the reel over it
+        log.warning("music bed not mixed (%s); the reel keeps the voice only", exc)
+        shutil.copyfile(joined, final)
     return [final]
+
+
+def bed_mix_cmd(ffmpeg: str, video: Path, out: Path, seconds: float, bed: Path = BED) -> list[str]:
+    """ffmpeg command: the voice track over the looped music bed, the bed ducked while the voice
+    speaks (sidechain), faded in and out, and the whole mix normalised to TARGET_LUFS."""
+    if not Path(bed).is_file():
+        raise ReelUnavailable("music bed asset is missing")
+    fade_at = max(0.0, seconds - 1.5)
+    graph = ("[0:a]aformat=sample_rates=44100:channel_layouts=stereo,asplit=2[voice][key];"
+             f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume={BED_GAIN},"
+             f"afade=t=in:d=1.2,afade=t=out:st={fade_at:.2f}:d=1.5[bed];"
+             "[bed][key]sidechaincompress=threshold=0.02:ratio=6:attack=30:release=450[ducked];"
+             "[voice][ducked]amix=inputs=2:duration=first:normalize=0,"
+             f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=7[a]")
+    return [ffmpeg, "-y", "-v", "error", "-i", str(video), "-stream_loop", "-1", "-i", str(bed),
+            "-filter_complex", graph, "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac",
+            "-b:a", "128k", "-ar", "44100", "-t", f"{seconds:.2f}", "-movflags", "+faststart", str(out)]
