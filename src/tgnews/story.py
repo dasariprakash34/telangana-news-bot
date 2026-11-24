@@ -127,7 +127,9 @@ _SYSTEM = (
     "wondering. No English words in Latin letters, no emojis.\n"
     "Structure: scenes, in order. Scene 1 asks the viewer a question about the subject with మన, for example "
     "'మీకు మన రామప్ప గుడి గురించి ఎరుకేనా?', and ends with the single most surprising fact in the source. "
-    "Then the story, one beat per scene, each scene one or two short sentences (at most 30 words). In the "
+    "Then the story, one beat per scene. LENGTH IS STRICT: write exactly 9 scenes; every scene is two "
+    "sentences of 15 to 25 words in total; all scenes together 150 to 210 words (a 70 to 90 second reel). "
+    "A shorter script is rejected. In the "
     "middle, one scene opens with a re-hook like 'గానీ కథ ఈడనే అయిపోలే' or 'ఇంకో ముచ్చట ఎరుకేనా?'. The last "
     "scene closes with {closing}.\n"
     "title_te: a 1 to 4 word chapter title in Telugu for scenes that start a new part of the story (the "
@@ -190,7 +192,7 @@ def write_script(llm, model: str, topic: Topic, facts: str) -> StoryScript:
     system = _SYSTEM.replace("{closing}", CLOSING.get(topic.kind, CLOSING["place"]))
     base = f"Subject: {_neutralise(topic.wiki)}\n\n<source>\n{_neutralise(facts)}\n</source>\n"
     problems: list[str] = []
-    for _attempt in range(2):
+    for _attempt in range(3):  # small models tend to write short; the reasons are fed back each time
         msg = base + (("\nYour previous attempt was rejected. Fix all of these:\n- " + "\n- ".join(problems) + "\n")
                       if problems else "")
         try:
