@@ -18,11 +18,27 @@ log = logging.getLogger(__name__)
 
 MODEL = "@cf/black-forest-labs/flux-1-schnell"
 STEPS = 8  # the model's maximum: cleaner shapes, still well inside the free allowance
-STYLE = ("flat vector illustration in an Indian folk storybook style, like a modern picture book: simple "
-         "clean shapes, soft gradients, warm saturated colours (saffron, turmeric yellow, leaf green, "
-         "terracotta, deep blue), gentle sunlight, rural Telangana setting, characters in traditional "
-         "Telangana clothes with friendly faces, vertical composition with the subject in the centre, "
-         "NO text, NO letters, NO words, NO watermark")
+_NO_TEXT = "NO text, NO letters, NO words, NO watermark"
+# Candidate looks for the story reels; STORY_STYLE picks one (default "storybook", the first one approved).
+STYLES = {
+    "storybook": ("flat vector illustration in an Indian folk storybook style, like a modern picture book: "
+                  "simple clean shapes, soft gradients, warm saturated colours (saffron, turmeric yellow, leaf "
+                  "green, terracotta, deep blue), gentle sunlight, rural Telangana setting, characters in "
+                  "traditional Telangana clothes with friendly faces, vertical composition with the subject "
+                  f"in the centre, {_NO_TEXT}"),
+    "cheriyal": ("in the style of a Cheriyal scroll painting from Telangana: a flat bright red background, bold "
+                 "black outlines, figures with large expressive eyes in profile, bright primary colours (red, "
+                 "yellow, blue, green), decorative floral borders, folk narrative art, hand-painted texture, "
+                 f"{_NO_TEXT}"),
+    "bold_poster": ("bold geometric flat vector art like a modern devotional poster: thick clean shapes, strong "
+                    "radiating sun-ray background in saffron and crimson, high contrast, glowing rim light, "
+                    "centred heroic composition, cinematic, crisp edges, rich gradients, Indian setting, "
+                    f"{_NO_TEXT}"),
+    "watercolour": ("soft Indian watercolour painting, loose brush strokes, warm earthy palette, textured paper, "
+                    "dreamy golden light, gentle detail on faces and stone carvings, rural Telangana, "
+                    f"{_NO_TEXT}"),
+}
+STYLE = STYLES["storybook"]
 
 
 class IllustrationUnavailable(RuntimeError):
@@ -34,14 +50,14 @@ def configured(env: Mapping[str, str]) -> bool:
 
 
 def draw(scene: str, out: Path, *, seed: int | None = None, env: Mapping[str, str] | None = None,
-         http: httpx.Client | None = None) -> Path:
+         http: httpx.Client | None = None, style: str | None = None) -> Path:
     """Draw one scene (an English description of what is in the picture) into `out` (JPEG)."""
     env = os.environ if env is None else env
     if not configured(env):
         raise IllustrationUnavailable("CF_ACCOUNT_ID / CF_API_TOKEN are not set")
     url = (f"https://api.cloudflare.com/client/v4/accounts/{env['CF_ACCOUNT_ID'].strip()}"
            f"/ai/run/{MODEL}")
-    body: dict = {"prompt": f"{scene}. {STYLE}", "steps": STEPS}  # FLUX schnell here takes no seed
+    body: dict = {"prompt": f"{scene}. {STYLES.get(style or '', STYLE)}", "steps": STEPS}  # FLUX schnell here takes no seed
     own = http is None
     client = http or httpx.Client(timeout=120)
     try:
@@ -82,19 +98,21 @@ SAMPLE_SCENES = (
 
 
 def send_sample(env: Mapping[str, str], telegram, out_dir: Path) -> list[str]:
-    """Draw the three sample scenes, keep them in `out_dir` and send each to Telegram."""
+    """Draw the sample scene in every candidate style (the sculptor: a face, stone carving and light,
+    the hardest test), keep them in `out_dir` and send each to Telegram, to pick the look."""
     report: list[str] = []
-    for i, (label, scene) in enumerate(SAMPLE_SCENES, start=1):
-        path = Path(out_dir) / f"scene-{i}.jpg"
+    _label, scene = SAMPLE_SCENES[1]
+    for i, (label, _style) in enumerate(STYLES.items(), start=1):
+        path = Path(out_dir) / f"style-{i}-{label}.jpg"
         try:
-            draw(scene, path, seed=100 + i, env=env)
+            draw(scene, path, env=env, style=label)
         except IllustrationUnavailable as exc:
             report.append(f"{label}: {exc}")
             continue
         if telegram is not None:
             try:
                 telegram.upload("sendPhoto", "photo", path, chat_id=telegram.chat_id,
-                                caption=f"Story look test {i}/3: {label}")
+                                caption=f"Story style {i}/{len(STYLES)}: {label}")
             except Exception as exc:  # the files are kept either way
                 report.append(f"{label}: drawn, Telegram failed ({type(exc).__name__})")
                 continue
