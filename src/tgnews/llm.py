@@ -24,7 +24,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-TIMEOUT_SECONDS = 60.0
+TIMEOUT_SECONDS = 120.0  # a 90-second Telugu story script is a long reply; 60 s timed out
 PROVIDERS = ("gemini", "anthropic")
 # Thinking-capable models spend the output budget on thinking and Telugu is token-expensive, so
 # never ask for less than this; callers' own limits still apply through their validation.

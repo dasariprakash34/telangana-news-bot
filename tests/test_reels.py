@@ -38,7 +38,7 @@ def test_reel_settings_default_off():
     s = Settings.from_env({})
     assert s.reels_enabled is False
     assert (s.reel_share, s.reel_daily_cap, s.reel_voice, s.reel_rate) == (
-        0.2, 5, "te-IN-MohanNeural", "+20%")
+        0.2, 5, "te-IN-MohanNeural", "+5%")
 
 
 def test_reel_settings_parse_and_reject():
@@ -484,9 +484,20 @@ def test_render_animated_times_each_scene_to_its_own_voice(tmp_path, tools):
     assert out[0].is_file() and len(browser.specs) == 5
     assert browser.specs[0]["words"] == [{"t": 0.1, "d": 0.5, "w": "హైదరాబాద్‌లో"}]
     assert browser.specs[1]["words"][0]["w"] == "మొదటి"
-    # 3.5 s of voice + the 0.2 s beat per scene, no idle holding: scene length follows the sentence
-    assert encoded == [(math.ceil(3.7 * 24), 0.2)] * 5
-    assert [c for c in tools.cmds if "ffmpeg" in c[0]][-1][-1].endswith(".mp4")  # the join
+    # 3.5 s of voice + a 0.45 s breath per scene: scene length follows the sentence
+    assert encoded == [(math.ceil(3.95 * 24), 0.45)] * 5
+    ff = [c for c in tools.cmds if "ffmpeg" in c[0]]
+    assert ff[-2][-1].endswith(".mp4") and "concat" in ff[-2]  # the join
+    mix = ff[-1]  # then the music bed under the voice, ducked, at Instagram's loudness
+    graph = mix[mix.index("-filter_complex") + 1]
+    assert "sidechaincompress" in graph and "loudnorm=I=-14" in graph and mix[-1] == str(out[0])
+
+
+def test_bed_mix_needs_the_asset_and_fades_out_at_the_end(tmp_path):
+    with pytest.raises(ReelUnavailable):
+        reel_anim.bed_mix_cmd("ffmpeg", tmp_path / "v.mp4", tmp_path / "o.mp4", 30.0, bed=tmp_path / "none.m4a")
+    cmd = reel_anim.bed_mix_cmd("ffmpeg", tmp_path / "v.mp4", tmp_path / "o.mp4", 30.0)
+    assert "afade=t=out:st=28.50:d=1.5" in cmd[cmd.index("-filter_complex") + 1] and "30.00" in cmd
 
 
 def test_animated_failure_falls_back_to_slideshow(tmp_path, tools):

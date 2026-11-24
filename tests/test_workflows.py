@@ -14,7 +14,7 @@ WF_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WF_DIR.glob("*.yml"))
 LISTENER = "telegram-listener.yml"
 EXPECTED = {"post.yml", "publish-approved.yml", "analyze.yml", "report.yml", "refresh-token.yml", LISTENER,
-            "daily-viral.yml", "voice-sample.yml"}
+            "daily-viral.yml", "voice-sample.yml", "story-sample.yml", "story.yml"}
 SETUP_PREFIXES = ("sudo apt-get ", "python -m pip install ")
 
 
@@ -123,7 +123,7 @@ class TestEachWorkflow:
 
     def test_installs_postgres_extra_and_shaping_libs(self, path):
         lines = "\n".join(run_lines(load(path)))
-        if path.name == "voice-sample.yml":  # only sends audio: needs neither the database nor Telegram text shaping
+        if path.name in ("voice-sample.yml", "story-sample.yml"):  # media only: no database, no Telugu shaping
             assert '-e "."' in lines
             return
         extra = ('-e ".[postgres,reels,viral]"' if path.name == "daily-viral.yml"
@@ -135,7 +135,7 @@ class TestEachWorkflow:
             assert "ffmpeg" in lines  # reels are drawn in the workflows that create drafts
 
 
-REEL_WORKFLOWS = {"post.yml", "telegram-listener.yml", "daily-viral.yml"}  # the ones that run `tgnews run` / `listen --post`
+REEL_WORKFLOWS = {"post.yml", "telegram-listener.yml", "daily-viral.yml", "story.yml"}  # the ones that run `tgnews run` / `listen --post`
 
 
 def test_mode_defaults_to_review():
@@ -265,6 +265,8 @@ def required_env(cmd: str) -> set[str]:
         return PRUNE_ENV | {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
     if cmd == "voice-sample":  # only ElevenLabs and Telegram: no database, LLM or Instagram
         return {"ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
+    if cmd == "story-sample":  # only Cloudflare Workers AI and Telegram
+        return {"CF_ACCOUNT_ID", "CF_API_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
     need = {"DATABASE_URL"} if cmd != "dry-run" else set()
     if cmd in cli._NEEDS_LLM:
         # build_llm reads the key of whichever provider is selected, so a step must pass both
@@ -342,7 +344,7 @@ def test_image_storage_env_only_where_needed():
                 line = step.get("run", "").strip()
                 if line.startswith("tgnews "):
                     has = images & set(step.get("env") or {})
-                    assert bool(has) == (line.split()[1] in {"run", "prune-images", "daily-viral"} or line == "tgnews listen --post"), \
+                    assert bool(has) == (line.split()[1] in {"run", "prune-images", "daily-viral", "story"} or line == "tgnews listen --post"), \
                         f"{path.name}: {line}"
     assert not STORAGE_ENV & required_env("prune-images")
 

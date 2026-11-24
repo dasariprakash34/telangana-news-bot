@@ -15,7 +15,7 @@ DEFAULT_ACTIVE_SLOT_COUNT = 36
 DEFAULT_REEL_SHARE = 0.2  # share of new posts made as reels when REELS_ENABLED
 DEFAULT_REEL_DAILY_CAP = 5  # most reels per 24 h (each is a few MB in the images repo)
 DEFAULT_REEL_VOICE = "te-IN-MohanNeural"
-DEFAULT_REEL_RATE = "+20%"
+DEFAULT_REEL_RATE = "+5%"
 DEFAULT_REEL_STYLE = "animated"
 
 

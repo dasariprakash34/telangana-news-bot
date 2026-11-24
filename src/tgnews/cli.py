@@ -33,7 +33,7 @@ _SECRET_HINTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "DATABASE_URL")
 # Only our own error types have messages known to be free of env values; everything else is
 # shown as its type name (and then scrubbed).
 _SHOWN = pipeline._SAFE_MESSAGE + (PipelineError, BlocklistError, ShapingUnavailable, ConfigError)
-_NEEDS_LLM = {"run", "dry-run", "report", "daily-viral"}
+_NEEDS_LLM = {"run", "dry-run", "report", "daily-viral", "story"}
 _NEEDS_IG = {"publish", "analyze", "refresh-token"}
 
 
@@ -62,7 +62,7 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
     if purpose != "dry-run" and (env.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_CHAT_ID")):
         tg = TelegramClient.from_env(env)
     up = None
-    if purpose in ("run", "daily-viral"):
+    if purpose in ("run", "daily-viral", "story"):
         up = build_uploader(env)
     make_reel, up_video = None, None
     if (settings.reels_enabled and purpose in ("run", "dry-run")) or purpose == "daily-viral":
@@ -71,6 +71,8 @@ def build_deps(settings: Settings, env: Mapping[str, str], *, purpose: str = "ru
                                       require_credit=settings.require_source_credit)
         if purpose in ("run", "daily-viral"):
             up_video = build_video_uploader(env)
+    if purpose == "story":  # the story reel draws its own frames (story.py); it only needs video storage
+        up_video = build_video_uploader(env)
     sources = load_sources(env.get("SOURCES_PATH") or DEFAULT_SOURCES)
     report = FetchReport()
     return Deps(fetch=lambda: fetch_stories(sources, report=report) + ttd.portal_stories(), fetch_report=report,
@@ -123,7 +125,9 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("publish-approved", "analyze", "report", "refresh-token"):
         sub.add_parser(name)
     sub.add_parser("voice-sample", help="send three ElevenLabs test voices (same Telugu lines) to Telegram")
+    sub.add_parser("story-sample", help="draw three test story scenes (Cloudflare Workers AI) and send them to Telegram")
     sub.add_parser("daily-viral", help="make today's trending-topic reel and send it to Telegram for approval")
+    sub.add_parser("story", help="make the next illustrated Telangana story reel and send it to Telegram for approval")
     return p
 
 
@@ -237,6 +241,14 @@ def _dispatch(args, settings: Settings, deps: Deps) -> int:
               f"detail={summary.detail or '-'}")
         for e in summary.errors:
             print(f"error: {e}", file=sys.stderr)
+    elif cmd == "story":
+        from . import story
+
+        summary = story.run_story(settings, deps)
+        print(f"status={summary.status} topic={summary.topic or '-'} post_id={summary.post_id} "
+              f"detail={summary.detail or '-'}")
+        for e in summary.errors:
+            print(f"error: {e}", file=sys.stderr)
     elif cmd == "listen":
         return _listen(args, settings, deps)
     elif cmd == "analyze":
@@ -298,6 +310,18 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             except Exception:
                 pass
             return 1
+    if args.command == "story-sample":
+        from . import illustrate
+
+        if not illustrate.configured(env):
+            print("story-sample: set CF_ACCOUNT_ID and CF_API_TOKEN first", file=sys.stderr)
+            return 1
+        out = Path(env.get("OUT_DIR") or "story-sample")
+        out.mkdir(parents=True, exist_ok=True)
+        report = illustrate.send_sample(env, _env_telegram(env), out)
+        for line in report:
+            print(line)
+        return 0 if any("drawn" in line for line in report) else 1
     if args.command == "voice-sample":
         from . import voices
 
@@ -313,7 +337,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         return 0
     purpose = {"run": "run", "dry-run": "dry-run", "publish-approved": "publish",
                "listen": "publish", "analyze": "analyze", "report": "report", "refresh-token": "refresh-token",
-               "daily-viral": "daily-viral"}[args.command]
+               "daily-viral": "daily-viral", "story": "story"}[args.command]
     deps = None
     try:
         settings = Settings.from_env(env)

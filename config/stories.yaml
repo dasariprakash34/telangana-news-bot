@@ -1,0 +1,39 @@
+# Story reels: Telangana temples, places, people, crafts and festivals, told like a village elder tells them.
+# One a day, in this order; a topic is used once. `wiki` is the exact English Wikipedia title the facts come
+# from (the script may use nothing that is not in that article). `kind` picks the closing line and the look.
+# Add topics at the end; a topic whose article is too short is skipped automatically.
+stories:
+  - {slug: ramappa, wiki: "Ramappa Temple", kind: temple}
+  - {slug: charminar, wiki: "Charminar", kind: place}
+  - {slug: rudrama-devi, wiki: "Rudrama Devi", kind: person}
+  - {slug: bathukamma, wiki: "Bathukamma", kind: festival}
+  - {slug: bhadrachalam, wiki: "Sita Ramachandraswamy Temple, Bhadrachalam", kind: temple}
+  - {slug: golconda, wiki: "Golconda", kind: place}
+  - {slug: komaram-bheem, wiki: "Komaram Bheem", kind: person}
+  - {slug: cheriyal, wiki: "Cheriyal scroll painting", kind: craft}
+  - {slug: medaram-jatara, wiki: "Sammakka Saralamma Jatara", kind: festival}
+  - {slug: thousand-pillar, wiki: "Thousand Pillar Temple", kind: temple}
+  - {slug: kuntala, wiki: "Kuntala Waterfall", kind: place}
+  - {slug: chakali-ilamma, wiki: "Chakali Ilamma", kind: person}
+  - {slug: pochampally, wiki: "Pochampally sari", kind: craft}
+  - {slug: basara, wiki: "Gnana Saraswati Temple", kind: temple}
+  - {slug: warangal-fort, wiki: "Warangal Fort", kind: place}
+  - {slug: bonalu, wiki: "Bonalu", kind: festival}
+  - {slug: kakatiya-thoranam, wiki: "Kakatiya Kala Thoranam", kind: place}
+  - {slug: alampur, wiki: "Alampur Navabrahma Temples", kind: temple}
+  - {slug: qutb-shahi-tombs, wiki: "Qutb Shahi tombs", kind: place}
+  - {slug: kaloji, wiki: "Kaloji Narayana Rao", kind: person}
+  - {slug: chilkur, wiki: "Chilkoor Balaji Temple", kind: temple}
+  - {slug: chowmahalla, wiki: "Chowmahalla Palace", kind: place}
+  - {slug: nirmal-toys, wiki: "Nirmal toys and craft", kind: craft}
+  - {slug: keesaragutta, wiki: "Keesaragutta Temple", kind: temple}
+  - {slug: bogatha, wiki: "Bogatha Waterfall", kind: place}
+  - {slug: falaknuma, wiki: "Falaknuma Palace", kind: place}
+  - {slug: kondagattu, wiki: "Kondagattu Anjaneya Swamy Temple", kind: temple}
+  - {slug: ananthagiri, wiki: "Ananthagiri Hills, Vikarabad district", kind: place}
+  - {slug: hyderabadi-biryani, wiki: "Hyderabadi biryani", kind: food}
+  - {slug: salar-jung, wiki: "Salar Jung Museum", kind: place}
+  - {slug: medak-cathedral, wiki: "Medak Cathedral", kind: place}
+  - {slug: laknavaram, wiki: "Laknavaram Lake", kind: place}
+  - {slug: bhongir, wiki: "Bhongir Fort", kind: place}
+  - {slug: kakatiyas, wiki: "Kakatiya dynasty", kind: history}

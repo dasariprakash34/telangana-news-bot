@@ -61,3 +61,17 @@ def test_reel_page_gets_the_photo_and_on_screen_credit(tmp_path):
     meta = reel_anim.meta_for(p, "Telangana News")
     assert meta["photo"].startswith("file://") and "Ravi, CC BY 2.0" in meta["foot"]
     assert "photo" not in reel_anim.meta_for(post(), "Telangana News")
+
+
+def test_up_to_three_photos_of_the_place_with_every_author_credited(tmp_path):
+    result = pages(page("File:Tirumala 1.jpg", index=1, artist="A"),
+                   page("File:Tirumala 2.jpg", index=2, artist="B", licence="CC BY 3.0"),
+                   page("File:Tirumala 3.jpg", index=3, artist="A"),
+                   page("File:Tirumala 4.jpg", index=4, artist="C"))
+    got = photo.find_photo("Tirumala", "temples", tmp_path, get_json=lambda u: result, get_bytes=lambda u: JPEG)
+    assert got.path.name == "photo-1.jpg" and [p.name for p in got.more] == ["photo-2.jpg", "photo-3.jpg"]
+    assert got.credit == "ఫోటోలు: A (CC BY-SA 4.0); B (CC BY 3.0), Wikimedia Commons"
+    p = post()
+    photo.attach(p, got)
+    meta = reel_anim.meta_for(p, "Telangana News")
+    assert len(meta["photos"]) == 3 and meta["photos"][0] == meta["photo"]
