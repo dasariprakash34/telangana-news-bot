@@ -188,7 +188,8 @@ def validate(script: StoryScript, facts: str) -> list[str]:
     return problems
 
 
-def write_script(llm, model: str, topic: Topic, facts: str) -> StoryScript:
+def write_script(llm, model: str, topic: Topic, facts: str,
+                 pause: Callable[[float], None] = time.sleep) -> StoryScript:
     system = _SYSTEM.replace("{closing}", CLOSING.get(topic.kind, CLOSING["place"]))
     base = f"Subject: {_neutralise(topic.wiki)}\n\n<source>\n{_neutralise(facts)}\n</source>\n"
     problems: list[str] = []
@@ -201,6 +202,8 @@ def write_script(llm, model: str, topic: Topic, facts: str) -> StoryScript:
             raise
         except LLMError as exc:  # our own messages: no key, no prompt text
             problems = [f"model call failed: {exc}"]
+            log.warning("story %s attempt %d: %s", topic.slug, _attempt + 1, problems[0])
+            pause(20)  # an overloaded model (503) usually recovers within seconds
             continue
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             problems = [f"malformed reply: {type(exc).__name__}; reply with the JSON object only"]
@@ -208,6 +211,7 @@ def write_script(llm, model: str, topic: Topic, facts: str) -> StoryScript:
         problems = validate(script, facts)
         if not problems:
             return script
+        log.warning("story %s attempt %d rejected: %s", topic.slug, _attempt + 1, "; ".join(problems)[:300])
     raise StoryRejected("story script rejected: " + "; ".join(problems)[:400])
 
 
