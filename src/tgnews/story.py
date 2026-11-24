@@ -41,7 +41,7 @@ DEFAULT_TOPICS = "config/stories.yaml"
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 UA = "tgnews/1.0 (Telugu news reel bot)"
 MIN_FACT_CHARS = 1200  # a story needs real material; thinner articles are skipped
-MAX_FACT_CHARS = 7000
+MAX_FACT_CHARS = 5000  # enough for a 90 s story; a smaller request is kinder to a busy model
 SCENES_MIN, SCENES_MAX = 7, 11
 WORDS_MIN, WORDS_MAX = 120, 230  # about 60-100 seconds at a storyteller's pace
 MAX_STORY_SECONDS = 100.0
@@ -193,7 +193,7 @@ def write_script(llm, model: str, topic: Topic, facts: str,
     system = _SYSTEM.replace("{closing}", CLOSING.get(topic.kind, CLOSING["place"]))
     base = f"Subject: {_neutralise(topic.wiki)}\n\n<source>\n{_neutralise(facts)}\n</source>\n"
     problems: list[str] = []
-    for _attempt in range(3):  # small models tend to write short; the reasons are fed back each time
+    for _attempt in range(4):  # short scripts and busy-model (503) replies both get another try
         msg = base + (("\nYour previous attempt was rejected. Fix all of these:\n- " + "\n- ".join(problems) + "\n")
                       if problems else "")
         try:
@@ -203,7 +203,7 @@ def write_script(llm, model: str, topic: Topic, facts: str,
         except LLMError as exc:  # our own messages: no key, no prompt text
             problems = [f"model call failed: {exc}"]
             log.warning("story %s attempt %d: %s", topic.slug, _attempt + 1, problems[0])
-            pause(20)  # an overloaded model (503) usually recovers within seconds
+            pause(60)  # an overloaded free-tier model (503) usually recovers within a minute or two
             continue
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             problems = [f"malformed reply: {type(exc).__name__}; reply with the JSON object only"]
