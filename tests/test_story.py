@@ -17,10 +17,10 @@ from tgnews.pipeline import Deps
 NOW = datetime(2026, 11, 25, 1, 40, tzinfo=timezone.utc)
 FACTS = ("The Ramappa Temple was built in 1213 by Recharla Rudra, a general of the Kakatiya king Ganapati Deva. "
          "It is named after its chief sculptor Ramappa. Its bricks are so light that they float on water. ") * 12
-LINE = "మన ఊరి పెద్దలు ఈ గుడి గురించి ఎంతో ప్రేమతో ముచ్చట చెప్తారు అంటారు చూడండి మరి ఎంత అందమైన కథ ఇది"
+LINE = "మన ఊరి పెద్దలు ఈ గుడి గురించి ఎంతో ప్రేమతో ముచ్చట చెప్తారు అంటారు చూడండి"
 
 
-def scenes(n=8, first="మీకు మన రామప్ప గుడి గురించి ఎరుకేనా? ఈ గుడి 1213 లో కట్టిండ్రు అంటారు"):
+def scenes(n=12, first="మీకు మన రామప్ప గుడి గురించి ఎరుకేనా? ఈ గుడి 1213 లో కట్టిండ్రు అంటారు"):
     out = [{"say_te": first, "title_te": "", "image_en": "the temple at sunrise"}]
     out += [{"say_te": LINE, "title_te": "కథ" if i == 3 else "", "image_en": f"scene {i}"} for i in range(2, n + 1)]
     return out
@@ -79,13 +79,13 @@ def test_fetch_facts_drops_reference_sections():
 def test_a_good_script_passes_and_the_prompt_asks_for_the_closing_of_its_kind():
     llm = LLM(script_json())
     s = story.write_script(llm, "m", story.Topic("ramappa", "Ramappa Temple", "temple"), FACTS)
-    assert len(s.scenes) == 8 and s.cover_te.startswith("రామప్ప")
+    assert len(s.scenes) == 12 and s.cover_te.startswith("రామప్ప")
     assert "కి జై!" in llm.calls[0]["system"] and "ఎరుకేనా" in llm.calls[0]["system"]
 
 
 @pytest.mark.parametrize("bad, expect", [
     (dict(scenes=scenes(first="రామప్ప గుడి చాలా పాతది మన ఊర్ల")), "must ask the viewer a question"),
-    (dict(scenes=scenes(n=4)), "need 7 to 11"),
+    (dict(scenes=scenes(n=4)), "need 10 to 14"),
     (dict(scenes=scenes(first="మీకు మన రామప్ప గుడి గురించి ఎరుకేనా? ఈ గుడి 1500 లో కట్టిండ్రు")), "not in the source"),
     (dict(cover_te="రामప్ప गुडि"), "another script"),
 ])
@@ -107,7 +107,7 @@ def test_scene_pictures_cover_is_the_poster_style_edges_cropped_and_one_retry(tm
 
     s = story._parse(script_json())
     paths = story.draw_scenes(s, tmp_path, draw=draw, pause=lambda x: None)
-    assert len(paths) == 8 and calls[:2] == ["bold_poster", "bold_poster"] and set(calls[2:]) == {"storybook"}
+    assert len(paths) == 12 and calls[:2] == ["bold_poster", "bold_poster"] and set(calls[2:]) == {"storybook"}
     with Image.open(paths[0]) as im:
         assert im.size == (story.ART, story.ART)
 
@@ -156,6 +156,6 @@ def test_a_short_article_is_skipped_and_a_failed_story_is_released_for_another_d
     out = story.run_story(Settings(), deps, topics=topics, http=wiki("too short"), draw=lambda *a, **k: None)
     assert out.status == "no_topic" and "too short" in out.errors[0]
     out = story.run_story(Settings(), deps, topics=topics, http=wiki(), draw=lambda p, o, style=None: jpeg(o))
-    assert out.status == "failed" and "need 7 to 11" in out.detail
+    assert out.status == "failed" and "need 10 to 14" in out.detail
     assert not db.story_seen(deps.engine, "story:ramappa")  # released: tried again on a later day
     assert "not made" in deps.telegram.calls[-1][1]["text"]

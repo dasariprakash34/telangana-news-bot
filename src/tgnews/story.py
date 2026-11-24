@@ -42,7 +42,7 @@ WIKI_API = "https://en.wikipedia.org/w/api.php"
 UA = "tgnews/1.0 (Telugu news reel bot)"
 MIN_FACT_CHARS = 1200  # a story needs real material; thinner articles are skipped
 MAX_FACT_CHARS = 5000  # enough for a 90 s story; a smaller request is kinder to a busy model
-SCENES_MIN, SCENES_MAX = 7, 11
+SCENES_MIN, SCENES_MAX = 10, 14  # a new picture every ~4.5 s, like the reference (20 cuts in 93 s)
 WORDS_MIN, WORDS_MAX = 120, 230  # about 60-100 seconds at a storyteller's pace
 MAX_STORY_SECONDS = 100.0
 SCENE_TAIL = 0.5
@@ -127,17 +127,23 @@ _SYSTEM = (
     "wondering. No English words in Latin letters, no emojis.\n"
     "Structure: scenes, in order. Scene 1 asks the viewer a question about the subject with మన, for example "
     "'మీకు మన రామప్ప గుడి గురించి ఎరుకేనా?', and ends with the single most surprising fact in the source. "
-    "Then the story, one beat per scene. LENGTH IS STRICT: write exactly 9 scenes; every scene is two "
-    "sentences of 15 to 25 words in total; all scenes together 150 to 210 words (a 70 to 90 second reel). "
-    "A shorter script is rejected. In the "
+    "Then the story, one beat per scene. LENGTH IS STRICT: write exactly 12 scenes; every scene is ONE "
+    "sentence of 10 to 18 words; all scenes together 150 to 210 words (a 70 to 90 second reel). A shorter "
+    "script is rejected.\n"
+    "Tell a STORY, not an encyclopedia entry: who made it or lived it, what they did, what was surprising, "
+    "what people still do there, and the legend if the source has one. Explain the surprise from the cover "
+    "(how, why) somewhere in the middle. Leave out dry facts (surveys, departments, registers) unless they "
+    "are themselves surprising. In the "
     "middle, one scene opens with a re-hook like 'గానీ కథ ఈడనే అయిపోలే' or 'ఇంకో ముచ్చట ఎరుకేనా?'. The last "
     "scene closes with {closing}.\n"
     "title_te: a 1 to 4 word chapter title in Telugu for scenes that start a new part of the story (the "
     "place, a name, a festival time), else an empty string; scene 1 has none.\n"
     "image_en: an English description of ONE illustration for that scene: who or what is in it, doing "
     "what, where, time of day; describe people by role and clothes, never as a photo of a real person; no "
-    "text in the picture. hero_en: one English sentence describing how the main subject looks, repeated in "
-    "every picture so the scenes match.\n"
+    "text in the picture. The pictures must VARY like a picture book: people at work, faces and hands in "
+    "close-up, crowds at a festival, the landscape, water, a detail of a carving or object, the place at "
+    "night; the whole building or landmark in at most 3 of the 12 pictures. hero_en: one English sentence "
+    "describing how the main subject looks, used only in the pictures that show it.\n"
     "cover_te: the cover line, at most 6 Telugu words, a surprise that makes people stop, like "
     "'రామప్ప గుడి ఇటుకలు నీళ్లలో తేలుతయ్!' (only if that is in the source).\n"
     "caption_te: the full story in 4 to 6 short Telugu sentences, then one line asking viewers how their "
@@ -168,8 +174,8 @@ def validate(script: StoryScript, facts: str) -> list[str]:
     for i, s in enumerate(script.scenes, 1):
         if telugu_share(s.say_te) <= 0.9:
             problems.append(f"scene {i} must be spoken Telugu in Telugu script only")
-        if len(s.say_te.split()) > 34:
-            problems.append(f"scene {i} is too long; at most 30 words")
+        if len(s.say_te.split()) > 22:
+            problems.append(f"scene {i} is too long; one sentence of at most 18 words")
         if not s.image_en:
             problems.append(f"scene {i} has no image_en")
     if script.scenes and "ఎరుకేనా" not in script.scenes[0].say_te and "?" not in script.scenes[0].say_te:
@@ -239,7 +245,8 @@ def draw_scenes(script: StoryScript, out_dir: Path, draw: Callable = illustrate.
         style = "bold_poster" if i == 0 else "storybook"
         for attempt in (1, 2):  # one retry: a busy moment at Cloudflare should not cost the reel
             try:
-                draw(scene.image_en + "." + hero, path, style=style)
+                draw(scene.image_en + "." + (hero if i == 0 else ""), path, style=style)  # hero only on
+                # the cover: forcing it into every picture made all 8 Ramappa scenes the same temple
                 break
             except illustrate.IllustrationUnavailable:
                 if attempt == 2:
