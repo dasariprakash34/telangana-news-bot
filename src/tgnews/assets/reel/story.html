@@ -1,0 +1,60 @@
+<!doctype html><meta charset=utf-8>
+<!-- Story reel page: one illustrated scene per spoken sentence or two. Python calls setup(spec, meta) per
+     scene (awaits the picture), then draw(t, dur) per frame and screenshots the page at 1080x1920.
+     Layout keeps text inside Instagram's safe zone: titles in 150-380, the picture 380-1460,
+     the spoken words over the picture's lower part (1120-1440). -->
+<style>
+@font-face{font-family:TG;src:url("NotoSansTelugu-VF.ttf");font-weight:100 900}
+:root{--accent:#ffb238}
+html,body{margin:0;width:1080px;height:1920px;overflow:hidden;background:#140d08;font-family:TG,sans-serif;color:#fff}
+#blur{position:absolute;inset:-80px;background-size:cover;background-position:center;filter:blur(46px) brightness(.5) saturate(1.2)}
+#frame{position:absolute;left:0;top:380px;width:1080px;height:1080px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.55)}
+#art{position:absolute;left:0;top:0;width:1080px;height:1080px;object-fit:cover;transform-origin:50% 50%}
+#shade{position:absolute;left:0;right:0;bottom:0;height:520px;background:linear-gradient(180deg,rgba(0,0,0,0),rgba(0,0,0,.78) 62%,rgba(0,0,0,.88))}
+#title{position:absolute;left:60px;right:60px;top:150px;height:230px;display:flex;align-items:center;justify-content:center;text-align:center;
+font-weight:900;line-height:1.25;text-shadow:0 6px 0 rgba(0,0,0,.35),0 0 40px rgba(0,0,0,.5);color:#fff}
+#title.cover{color:var(--accent);-webkit-text-stroke:3px #3a1600;paint-order:stroke fill}
+#subs{position:absolute;left:70px;right:70px;top:1120px;height:320px;display:flex;align-items:flex-end;justify-content:center;text-align:center}
+#words{font-weight:800;font-size:58px;line-height:1.45;text-shadow:0 4px 18px rgba(0,0,0,.8)}
+#words span{display:inline-block;margin-right:.26em}
+.brand{position:absolute;top:66px;left:64px;font-size:38px;font-weight:700;opacity:.9}
+.foot{position:absolute;bottom:40px;left:0;right:0;text-align:center;font-size:26px;opacity:.5}
+.prog{position:absolute;left:0;bottom:0;height:10px;background:var(--accent)}
+</style>
+<div id=blur></div>
+<div id=frame><img id=art alt=""><div id=shade></div></div>
+<div id=title></div>
+<div id=subs><div id=words></div></div>
+<div class=brand id=brand></div>
+<div class=foot id=foot></div>
+<div class=prog id=prog></div>
+<script>
+const $=id=>document.getElementById(id), clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x));
+const eo=t=>1-Math.pow(1-clamp(t),3);
+let sp=null, spans=[];
+function setup(spec,meta){
+  sp=spec; document.documentElement.style.setProperty('--accent',meta.accent||'#ffb238');
+  $('brand').textContent=meta.label||''; $('foot').textContent=meta.foot||'';
+  const t=$('title'); t.textContent=spec.title||''; t.className=spec.cover?'cover':'';
+  t.style.fontSize=(spec.cover?(spec.title.length>18?92:110):(spec.title.length>14?70:84))+'px';
+  const w=$('words'); w.innerHTML=''; spans=[];
+  spec.words.forEach(x=>{const e=document.createElement('span');e.textContent=x.w;w.appendChild(e);spans.push(e)});
+  let size=58; w.style.fontSize=size+'px'; while(w.offsetHeight>300&&size>40){size-=3;w.style.fontSize=size+'px'}
+  const im=$('art'); $('blur').style.backgroundImage=`url("${spec.img}")`;
+  if(im.dataset.src!==spec.img){im.dataset.src=spec.img; im.src=spec.img; return im.decode().then(()=>true,()=>true)}
+  return true;
+}
+function draw(t,dur){
+  $('prog').style.width=(1080*clamp(t/dur))+'px';
+  // slow push-in, drifting left or right on alternate scenes, so every scene moves
+  const k=clamp(t/Math.max(dur,0.1)), dir=(sp.index%2?1:-1);
+  $('art').style.transform=`scale(${1.04+0.07*k}) translateX(${dir*18*k}px)`;
+  $('art').style.opacity=sp.index===0?1:eo(t/.35);          // frame 1 of the reel is already the full cover
+  $('title').style.opacity=sp.index===0?1:eo((t-.1)/.4);
+  let cur=-1; sp.words.forEach((x,i)=>{if(x.t<=t)cur=i});
+  spans.forEach((e,i)=>{
+    if(i===cur){e.style.color='var(--accent)';e.style.opacity=1}
+    else{e.style.color='#fff';e.style.opacity=(i<cur||sp.index===0)?1:.55}
+  });
+}
+</script>

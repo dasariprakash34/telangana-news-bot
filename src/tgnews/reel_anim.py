@@ -223,10 +223,11 @@ def find_chrome() -> str:
 
 
 class AnimBrowser:
-    """One headless Chrome showing anim.html. Use as a context manager."""
+    """One headless Chrome showing anim.html (or another page in assets/reel). Use as a context manager."""
 
-    def __init__(self, chrome: str | None = None):
+    def __init__(self, chrome: str | None = None, page: str = "anim.html"):
         self._chrome_path = chrome
+        self._page = page
         self._proc = self._ws = None
         self._tmp: Path | None = None
         self._id = 0
@@ -238,7 +239,7 @@ class AnimBrowser:
             raise ReelUnavailable("websocket-client is not installed") from None
         chrome = self._chrome_path or find_chrome()
         self._tmp = Path(tempfile.mkdtemp(prefix="tgnews-anim-"))
-        for src in (ASSETS / "anim.html", FONT_PATH):
+        for src in (ASSETS / self._page, FONT_PATH):
             shutil.copy(src, self._tmp / src.name)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -263,7 +264,7 @@ class AnimBrowser:
             self._ws = websocket.create_connection(page["webSocketDebuggerUrl"], max_size=None)
             self._cdp("Emulation.setDeviceMetricsOverride", width=1080, height=1920,
                       deviceScaleFactor=1, mobile=False)
-            self._cdp("Page.navigate", url=(self._tmp / "anim.html").as_uri())
+            self._cdp("Page.navigate", url=(self._tmp / self._page).as_uri())
             for _ in range(120):
                 if self.evaluate("document.readyState") == "complete":
                     break

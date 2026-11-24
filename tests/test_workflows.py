@@ -14,7 +14,7 @@ WF_DIR = ROOT / ".github" / "workflows"
 WORKFLOWS = sorted(WF_DIR.glob("*.yml"))
 LISTENER = "telegram-listener.yml"
 EXPECTED = {"post.yml", "publish-approved.yml", "analyze.yml", "report.yml", "refresh-token.yml", LISTENER,
-            "daily-viral.yml", "voice-sample.yml", "story-sample.yml"}
+            "daily-viral.yml", "voice-sample.yml", "story-sample.yml", "story.yml"}
 SETUP_PREFIXES = ("sudo apt-get ", "python -m pip install ")
 
 
@@ -135,7 +135,7 @@ class TestEachWorkflow:
             assert "ffmpeg" in lines  # reels are drawn in the workflows that create drafts
 
 
-REEL_WORKFLOWS = {"post.yml", "telegram-listener.yml", "daily-viral.yml"}  # the ones that run `tgnews run` / `listen --post`
+REEL_WORKFLOWS = {"post.yml", "telegram-listener.yml", "daily-viral.yml", "story.yml"}  # the ones that run `tgnews run` / `listen --post`
 
 
 def test_mode_defaults_to_review():
@@ -344,7 +344,7 @@ def test_image_storage_env_only_where_needed():
                 line = step.get("run", "").strip()
                 if line.startswith("tgnews "):
                     has = images & set(step.get("env") or {})
-                    assert bool(has) == (line.split()[1] in {"run", "prune-images", "daily-viral"} or line == "tgnews listen --post"), \
+                    assert bool(has) == (line.split()[1] in {"run", "prune-images", "daily-viral", "story"} or line == "tgnews listen --post"), \
                         f"{path.name}: {line}"
     assert not STORAGE_ENV & required_env("prune-images")
 
