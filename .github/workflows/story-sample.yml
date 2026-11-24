@@ -2,8 +2,6 @@ name: tgnews story sample
 
 on:
   workflow_dispatch:
-  push:
-    branches: [story-sample]  # push to this branch to run the look test before the workflow is on main
 
 # Single shared group for ALL tgnews workflows, so two runs never overlap. A new run does not
 # cancel one already in progress.

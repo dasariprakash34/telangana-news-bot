@@ -6,8 +6,6 @@ on:
     # Telegram for approval well before the evening. Like every reel it is posted only after approval.
     - cron: "35 1 * * *"
   workflow_dispatch:
-  push:
-    branches: [story-sample]  # push to this branch to try a story before the workflow is on main
 
 # Single shared group for ALL tgnews workflows, so two runs never overlap. A new run does not
 # cancel one already in progress.

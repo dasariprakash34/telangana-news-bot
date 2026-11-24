@@ -227,4 +227,4 @@ run artifact, so the look can be judged before anything is posted.
 `story.yml` (`tgnews story`, daily at 07:05 IST) makes the next story in `config/stories.yaml`: facts from the
 topic's English Wikipedia article only, spoken Telangana Telugu, one illustrated scene per beat (a bold poster
 cover, storybook scenes), the music bed, -14 LUFS. It goes to Telegram for approval like every reel; a topic is
-told once. Pushing to the `story-sample` branch also runs it, to try a story before it is on `main`.
+told once.

@@ -17,7 +17,8 @@ import httpx
 log = logging.getLogger(__name__)
 
 MODEL = "@cf/black-forest-labs/flux-1-schnell"
-STEPS = 8  # the model's maximum: cleaner shapes, still well inside the free allowance
+STEPS = 4  # the model's own default. 8 cost about twice as much: the free 10,000 daily neurons ran out
+# after ~25 pictures on 24 Nov 2026. At 4 steps a 12-picture story fits a day's free allowance.
 _NO_TEXT = "NO text, NO letters, NO words, NO watermark"
 # Candidate looks for the story reels; STORY_STYLE picks one (default "storybook", the first one approved).
 STYLES = {
