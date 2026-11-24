@@ -28,7 +28,7 @@ import httpx
 import yaml
 
 from . import db, gate, illustrate
-from .llm import LLM_AUTH_ERRORS
+from .llm import LLM_AUTH_ERRORS, LLMError
 from .models import PostState, Story
 from .pipeline import Deps, PipelineError, _aware, compose_caption, upload_cover
 from .reel import ReelUnavailable, _run, _tool, cover_path
@@ -197,6 +197,9 @@ def write_script(llm, model: str, topic: Topic, facts: str) -> StoryScript:
             script = _parse(_ask(llm, model, system, msg, max_tokens=8000))
         except LLM_AUTH_ERRORS:
             raise
+        except LLMError as exc:  # our own messages: no key, no prompt text
+            problems = [f"model call failed: {exc}"]
+            continue
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             problems = [f"malformed reply: {type(exc).__name__}; reply with the JSON object only"]
             continue
